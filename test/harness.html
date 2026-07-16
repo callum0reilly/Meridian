@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ludo two-player harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/ludo.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 78vh; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-ludo { flex: 1; min-height: 0; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  #results div { padding: 2px 0; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="rig">
+  <div class="seatbox"><h3>Host (created the room)</h3><div class="hdr" id="hdrA"></div><div id="panel-ludo" class="panel" data-who="A"></div></div>
+  <div class="seatbox"><h3>Joiner (entered the code)</h3><div class="hdr" id="hdrB"></div><div id="panel-ludo" class="panel" data-who="B"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+import { install } from './fake-peer.js';
+install();                                  // must land before any room is made
+const ludo = (await import('../js/games/ludo/index.js')).default;
+
+const out = document.getElementById('results');
+let failed = 0;
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const check = (cond, msg) => {
+  if (!cond) failed++;
+  say((cond ? 'PASS  ' : 'FAIL  ') + msg, cond ? 'ok' : 'bad');
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+// Deterministic dice so the run is reproducible and reaches an interesting board.
+const DICE = [6, 4, 6, 3, 6, 5, 2, 6, 1, 6, 4, 3, 6, 2, 5, 6, 3, 4, 1, 6, 2, 3];
+let diceAt = 0;
+Math.random = () => {
+  const face = DICE[diceAt++ % DICE.length];
+  return (face - 1) / 6 + 0.001;             // rollDice: 1 + floor(rng()*6)
+};
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+ludo.init(A, document.getElementById('hdrA'));
+ludo.init(B, document.getElementById('hdrB'));
+
+const $ = (root, sel) => root.querySelector(sel);
+const tokenPositions = (root) => [...root.querySelectorAll('.token')]
+  .map((t) => t.getAttribute('transform')).join(' | ');
+
+try {
+  // ---- create ----
+  $(A, '.name').value = 'Callum';
+  $(A, '.create').click();
+  await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+  const code = $(A, '.codeval').textContent;
+  check(/^[A-Z0-9]{5}$/.test(code), `host created room with a 5-char code: ${code}`);
+  check($(A, '.start').disabled, 'start is disabled with only 1 player');
+
+  // ---- join ----
+  $(B, '.name').value = 'Mate';
+  $(B, '.codein').value = code;
+  $(B, '.join').click();
+  await waitFor(() => $(B, '.seats')?.children.length === 2, 'joiner to see the lobby');
+  check(true, 'joiner reached the room using only the code');
+  check($(A, '.seats').children.length === 2, 'host sees 2 players');
+  check($(A, '.seats').textContent.includes('Mate'), "host sees the joiner's name");
+  check($(B, '.seats').textContent.includes('Callum'), "joiner sees the host's name");
+  check(!$(A, '.start').disabled, 'start becomes enabled at 2 players');
+  check($(B, '.start').hidden, 'only the host sees the start button');
+
+  // ---- start ----
+  $(A, '.start').click();
+  await waitFor(() => $(A, '.board') && $(B, '.board'), 'both boards');
+  check(true, 'starting the game moved both players to the board');
+  check($(A, '.board').querySelectorAll('.cell').length >= 52 + 20,
+    'board drew the full track, home columns and centre');
+  check(tokenPositions(A) === tokenPositions(B), 'both players see identical opening positions');
+  check($(A, '.token') && A.querySelectorAll('.token').length === 8,
+    '8 tokens on the board for 2 players');
+
+  // ---- play ----
+  check(!$(A, '.rollbtn').disabled, "host can roll on the host's turn");
+  check($(B, '.rollbtn').disabled, "joiner cannot roll on the host's turn");
+
+  let moves = 0, rolls = 0, bothLive = 0, capture = false, gotHome = false;
+  // The roll button self-locks for 400ms while the dice animates, so give each
+  // turn room to breathe rather than hammering it.
+  for (let i = 0; i < 120 && moves < 40; i++) {
+    const aLive = !$(A, '.rollbtn').disabled, bLive = !$(B, '.rollbtn').disabled;
+    if (aLive && bLive) bothLive++;              // must never happen
+    const live = aLive ? A : (bLive ? B : null);
+    if (!live) { await sleep(120); continue; }
+
+    live.querySelector('.rollbtn').click();
+    rolls++;
+    await sleep(550);
+    const movable = live.querySelector('.token.movable');
+    if (movable) { movable.dispatchEvent(new MouseEvent('click', { bubbles: true })); moves++; }
+    await sleep(250);
+
+    const log = $(A, '.logwrap').textContent;
+    if (/knocked/.test(log)) capture = true;
+    if (/got a token home/.test(log)) gotHome = true;
+    if (tokenPositions(A) !== tokenPositions(B)) throw new Error('boards drifted apart after move ' + moves);
+    if ($(A, '.over')) break;                    // somebody won
+  }
+  check(rolls > 8, `rolled ${rolls} times across both players`);
+  check(moves > 6, `played ${moves} moves through the host`);
+  check(bothLive === 0, 'the two players were never able to act at the same time');
+  check(tokenPositions(A) === tokenPositions(B), 'boards stayed in sync for the whole game');
+  // Whether a capture or a lap completes depends on the dice, so these are
+  // observations, not assertions — rules.js unit-tests both directly.
+  say(`note  capture seen this run: ${capture}`);
+  say(`note  token reached home this run: ${gotHome}`);
+
+  const onBoard = [...A.querySelectorAll('.token')].length;
+  check(onBoard === 8, `no tokens lost or duplicated during play (${onBoard} of 8)`);
+  check(A.querySelector('.logwrap').textContent.trim().length > 0, 'game log recorded the turns');
+  check($(A, '.logwrap').textContent === $(B, '.logwrap').textContent, 'both players see the same log');
+
+  // ---- bad code ----
+  const C = document.createElement('div');
+  C.id = 'panel-ludo';
+  document.body.appendChild(C);
+  ludo.init(C, document.createElement('div'));
+  $(C, '.name').value = 'Nobody';
+  $(C, '.codein').value = 'ZZZZZ';
+  $(C, '.join').click();
+  await waitFor(() => $(C, '.lobbyerr')?.textContent?.length > 0, 'error for a bad code', 15000);
+  check(/No room/i.test($(C, '.lobbyerr').textContent),
+    'joining a nonexistent code fails with a clear message');
+  C.remove();
+} catch (err) {
+  check(false, 'threw: ' + err.message);
+  console.error(err);
+}
+
+say('');
+say(failed ? `${failed} CHECK(S) FAILED` : 'ALL CHECKS PASSED', failed ? 'bad' : 'ok');
+document.title = failed ? `FAIL (${failed})` : 'ALL PASS';
+</script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>connecting…</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>body{font:14px monospace;background:#0f1420;color:#e7ecf5;padding:20px}
+.ok{color:#2fbf6b}.bad{color:#ff8a8a}</style>
+</head>
+<body>
+<div id="o"></div>
+<script type="module">
+// Smoke test against the REAL public PeerJS broker over real WebRTC.
+// The other harness stubs PeerJS, so it can't catch things like the broker
+// rejecting our custom peer-id format. This can — at the cost of needing
+// working network + UDP, so it is not part of the normal test run.
+import { createRoom, joinRoom } from '../js/net.js';
+
+const o = document.getElementById('o');
+let bad = 0;
+const say = (m, cls) => { const d = document.createElement('div'); d.className = cls || ''; d.textContent = m; o.appendChild(d); };
+const check = (c, m) => { if (!c) bad++; say((c ? 'PASS  ' : 'FAIL  ') + m, c ? 'ok' : 'bad'); };
+
+try {
+  const got = [];
+  const host = await createRoom('ludo', { onMessage: (m) => got.push(m) });
+  check(/^[A-Z0-9]{5}$/.test(host.code), 'real broker accepted our custom peer id, code ' + host.code);
+  check(host.selfId === 'mrdn-ludo-' + host.code, 'peer id is namespaced: ' + host.selfId);
+
+  const guest = await joinRoom('ludo', host.code, {});
+  check(true, 'a second peer joined over real WebRTC using only the code');
+
+  guest.send(null, { t: 'hello', name: 'Smoke' });
+  await new Promise((r) => setTimeout(r, 1500));
+  check(got.some((m) => m.t === 'hello' && m.name === 'Smoke'), 'host received the joiner message over the data channel');
+
+  host.close(); guest.close();
+} catch (err) {
+  check(false, 'threw: ' + err.message);
+}
+say('');
+say(bad ? bad + ' FAILED' : 'REAL NETWORK OK', bad ? 'bad' : 'ok');
+document.title = bad ? 'REAL FAIL' : 'REAL PASS';
+</script>
+</body>
+</html>

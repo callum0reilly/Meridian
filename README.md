@@ -59,6 +59,15 @@ path and the host can't accidentally cheat.
   occasionally flaky. Point `PEER_OPTS` in `js/net.js` at your own PeerServer if
   it becomes a problem.
 - Strict corporate firewalls / some VPNs block WebRTC entirely.
+- **Players on different networks usually can't reach each other directly**, so
+  their traffic is relayed by a TURN server — a Metered account, configured in
+  `PEER_OPTS`. It has a monthly bandwidth quota. If joining starts failing with
+  *"Found room … but couldn't open a connection"* for everyone at once, check
+  the quota and the key first: that message means signalling worked and only the
+  relay path is broken. The credentials in that file are public by design (they
+  ship to every browser); rotate them in the dashboard if abused. Don't replace
+  them with a free anonymous relay — the last two we used, PeerJS's bundled
+  defaults and openrelay, were both shut down.
 
 To move to a real backend later, rewrite `js/net.js` and nothing else — it's the
 only file that knows how players reach each other.

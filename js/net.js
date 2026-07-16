@@ -39,22 +39,36 @@ const CODE_LEN = 5;
 // the same wifi: Chrome hides local IPs behind mDNS `.local` candidates that
 // many routers won't resolve, and the STUN-discovered public address is the
 // same for both, so it only works if the router hairpins. When both fail the
-// only route left is a TURN relay. PeerJS ships free default TURN servers, but
-// they are shared and frequently saturated, so name our own.
+// only route left is a TURN relay.
+//
+// The relay is a named account rather than a free public one on purpose. Every
+// anonymous relay we relied on has since been switched off — PeerJS's own
+// bundled defaults no longer resolve, and openrelay's host now answers 502. A
+// relay carries every byte of the game, so an unauthenticated one is a free
+// proxy for the whole internet and gets abused until it dies. A key tied to an
+// account can be revoked, which is the only reason a free tier survives.
+//
+// These credentials are public by construction: this file ships to every
+// player's browser, so anyone can read them. That is accepted — the blast
+// radius is relay quota, not the account. Rotate them in the Metered dashboard
+// if they get abused. Do NOT put the dashboard's *API key* here; it can mint
+// fresh credentials, which makes it worth more than the quota it protects.
 const PEER_OPTS = {
   config: {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
-      // Port 443/TLS last: it is the slowest to connect but the hardest to
-      // block, so it survives networks that only allow HTTPS out.
+      { urls: 'stun:stun.relay.metered.ca:80' },
       {
         urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turns:openrelay.metered.ca:443?transport=tcp',
+          'turn:global.relay.metered.ca:80',
+          'turn:global.relay.metered.ca:80?transport=tcp',
+          'turn:global.relay.metered.ca:443',
+          // Port 443/TLS last: it is the slowest to connect but the hardest to
+          // block, so it survives networks that only allow HTTPS out.
+          'turns:global.relay.metered.ca:443?transport=tcp',
         ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject',
+        username: 'f0d13d045100fd93f41fbe79',
+        credential: 'T33BfYL61leMuacm',
       },
     ],
   },

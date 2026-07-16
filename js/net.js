@@ -30,7 +30,35 @@ const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 const CODE_LEN = 5;
 
 // Point this at your own PeerServer if the public broker gets unreliable.
-const PEER_OPTS = {};
+//
+// The broker only introduces peers; game data goes browser-to-browser, which
+// needs a real network path between the two. Two tabs on one machine always
+// have one (loopback), which is why local testing never exercises this.
+//
+// Two *different* machines often have no direct path — including, awkwardly, on
+// the same wifi: Chrome hides local IPs behind mDNS `.local` candidates that
+// many routers won't resolve, and the STUN-discovered public address is the
+// same for both, so it only works if the router hairpins. When both fail the
+// only route left is a TURN relay. PeerJS ships free default TURN servers, but
+// they are shared and frequently saturated, so name our own.
+const PEER_OPTS = {
+  config: {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      // Port 443/TLS last: it is the slowest to connect but the hardest to
+      // block, so it survives networks that only allow HTTPS out.
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turns:openrelay.metered.ca:443?transport=tcp',
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject',
+      },
+    ],
+  },
+};
 
 export function randomCode() {
   const bytes = crypto.getRandomValues(new Uint8Array(CODE_LEN));
@@ -144,22 +172,50 @@ export async function joinRoom(game, rawCode, handlers = {}) {
   await new Promise((resolve, reject) => {
     // peer.connect() to a nonexistent id neither opens nor errors promptly, so
     // a "no such room" only ever shows up as silence. Time it out ourselves.
+    //
+    // A room that exists but is unreachable is *also* silence, so a timeout on
+    // its own can't tell "wrong code" from "can't get there" — and blaming the
+    // code sends people hunting for a typo that isn't there. The host's answer
+    // to our offer is what separates them: an answer can only come from a live
+    // host holding that id, so anything failing afterwards is the network path,
+    // not the code. signalingState leaves 'have-local-offer' when it lands.
+    const pc = conn.peerConnection;
+    let answered = false;
+
+    const noRoom = () => new Error(`No room "${code}" — check the code, or ask the host if they're still on the page.`);
+    const noPath = () => new Error(`Found room "${code}", but couldn't open a connection to the host. A firewall, VPN, or a router that blocks devices from talking directly will do this.`);
+
     const timer = setTimeout(() => {
       cleanup();
       peer.destroy();
-      reject(new Error(`No room "${code}" — check the code, or ask the host if they're still on the page.`));
+      reject(answered ? noPath() : noRoom());
     }, 12000);
+
+    const onSignalling = () => { if (pc.signalingState === 'stable') answered = true; };
+    const onIceState = () => {
+      // 'failed' means ICE ran out of candidate pairs — no timeout needed.
+      if (pc.iceConnectionState !== 'failed') return;
+      cleanup();
+      peer.destroy();
+      reject(noPath());
+    };
 
     const ok = () => { cleanup(); resolve(); };
     const fail = (err) => {
       cleanup();
       peer.destroy();
-      reject(err?.type === 'peer-unavailable'
-        ? new Error(`No room "${code}" — check the code, or ask the host if they're still on the page.`)
-        : friendly(err));
+      reject(err?.type === 'peer-unavailable' ? noRoom() : friendly(err));
     };
-    const cleanup = () => { clearTimeout(timer); conn.off('open', ok); peer.off('error', fail); };
+    const cleanup = () => {
+      clearTimeout(timer);
+      conn.off('open', ok);
+      peer.off('error', fail);
+      pc?.removeEventListener('signalingstatechange', onSignalling);
+      pc?.removeEventListener('iceconnectionstatechange', onIceState);
+    };
 
+    pc?.addEventListener('signalingstatechange', onSignalling);
+    pc?.addEventListener('iceconnectionstatechange', onIceState);
     conn.on('open', ok);
     peer.on('error', fail);
   });

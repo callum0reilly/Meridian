@@ -6,6 +6,6 @@
   "type": "module",
   "scripts": {
     "start": "npx --yes serve@14 -l 8080 .",
-    "test": "node --test test/rules.test.mjs"
+    "test": "node --test test/rules.test.mjs test/uno.test.mjs"
   }
 }

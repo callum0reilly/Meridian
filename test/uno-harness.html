@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Uno three-player harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/uno.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 74vh; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-width: 0; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-uno { flex: 1; min-height: 0; }
+  /* Three panels side by side is tighter than the real thing; drop the side
+     column so the table itself stays inspectable. The id selector is not
+     optional — #panel-uno aside sets display:flex and would outrank `.rig aside`.
+     Same trap the shell warns about for .panel[hidden]. */
+  .rig #panel-uno aside { display: none; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  #results div { padding: 2px 0; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="rig">
+  <div class="seatbox"><h3>Host</h3><div class="hdr" id="hdrA"></div><div id="panel-uno" class="panel" data-who="A"></div></div>
+  <div class="seatbox"><h3>Joiner 1</h3><div class="hdr" id="hdrB"></div><div id="panel-uno" class="panel" data-who="B"></div></div>
+  <div class="seatbox"><h3>Joiner 2</h3><div class="hdr" id="hdrC"></div><div id="panel-uno" class="panel" data-who="C"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+import { install } from './fake-peer.js';
+install();                                  // must land before any room is made
+const uno = (await import('../js/games/uno/index.js')).default;
+
+const out = document.getElementById('results');
+let failed = 0;
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const check = (cond, msg) => {
+  if (!cond) failed++;
+  say((cond ? 'PASS  ' : 'FAIL  ') + msg, cond ? 'ok' : 'bad');
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+const C = document.querySelector('[data-who="C"]');
+const PANELS = [A, B, C];
+uno.init(A, document.getElementById('hdrA'));
+uno.init(B, document.getElementById('hdrB'));
+uno.init(C, document.getElementById('hdrC'));
+
+const $ = (root, sel) => root.querySelector(sel);
+const $$ = (root, sel) => [...root.querySelectorAll(sel)];
+const handIds = (root) => $$(root, '.hand .card').map((c) => c.dataset.id);
+const allCardIds = (root) => $$(root, '.card').map((c) => c.dataset.id);
+const liveButtons = (root) => $$(root, '.actions button').filter((b) => !b.disabled);
+
+try {
+  // ---- create + join ----
+  $(A, '.name').value = 'Callum';
+  $(A, '.create').click();
+  await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+  const code = $(A, '.codeval').textContent;
+  check(/^[A-Z0-9]{5}$/.test(code), `host created room with a 5-char code: ${code}`);
+  check($(A, '.start').disabled, 'start is disabled with only 1 player');
+
+  for (const [panel, name] of [[B, 'Mate'], [C, 'Ana']]) {
+    $(panel, '.name').value = name;
+    $(panel, '.codein').value = code;
+    $(panel, '.join').click();
+  }
+  await waitFor(() => $(A, '.seats')?.children.length === 3, 'all three in the lobby');
+  check(true, 'both joiners reached the room using only the code');
+  check(!$(A, '.start').disabled, 'start enabled at 3 players');
+  check($(B, '.start').hidden && $(C, '.start').hidden, 'only the host sees the start button');
+
+  // ---- start ----
+  $(A, '.start').click();
+  await waitFor(() => PANELS.every((p) => $(p, '.felt')), 'all three tables');
+  check(true, 'starting dealt everyone into the table view');
+
+  for (const p of PANELS) {
+    check(handIds(p).length === 7, `${p.dataset.who} was dealt 7 cards`);
+    check($$(p, '.opp').length === 2, `${p.dataset.who} sees 2 opponents`);
+  }
+
+  // ---- the whole point: hands are secret ----
+  const [ha, hb, hc] = PANELS.map(handIds);
+  const overlap = (x, y) => x.filter((id) => y.includes(id));
+  check(overlap(ha, hb).length === 0 && overlap(ha, hc).length === 0 && overlap(hb, hc).length === 0,
+    'no two players were dealt the same card');
+  // A card id belonging to someone else must not appear anywhere in your DOM.
+  for (const [me, mine] of [[A, ha], [B, hb], [C, hc]]) {
+    const others = [ha, hb, hc].filter((h) => h !== mine).flat();
+    const leaked = allCardIds(me).filter((id) => others.includes(id));
+    check(leaked.length === 0,
+      `${me.dataset.who}'s screen contains none of the other players' cards`);
+  }
+  check($$(B, '.opp .count').every((n) => /^\d+$/.test(n.textContent)),
+    'opponents are shown as a card count, not as cards');
+
+  // ---- only one player can act at a time ----
+  const actives = PANELS.filter((p) => liveButtons(p).some((b) => b.classList.contains('act')
+    && !b.classList.contains('uno') && !b.classList.contains('catch')));
+  check(actives.length === 1, `exactly one player has turn actions (${actives.length})`);
+
+  // ---- play ----
+  // Drive whoever is on turn: play a legal card if there is one, else take the
+  // action the UI offers (draw / pass / take the chain / challenge).
+  let plays = 0, draws = 0, wilds = 0, chains = 0, challenges = 0, catches = 0, rounds = 0;
+  let bothLive = 0;
+
+  const turnPanel = () => PANELS.find((p) =>
+    $(p, '.card.playable') ||
+    liveButtons(p).some((b) => b.classList.contains('act')
+      && !b.classList.contains('uno') && !b.classList.contains('catch')));
+
+  // #freeze=N stops after N cards so the table can be inspected in a live
+  // state. The checks after the loop are skipped — this mode is for looking,
+  // not for passing.
+  //
+  // The hash, not a query param: `serve` rewrites /uno-harness.html to
+  // /uno-harness and drops the query string on the way, so ?freeze= never
+  // arrives. A hash survives the redirect.
+  const FREEZE = Number(/(?:^|[#&])freeze=(\d+)/.exec(location.hash)?.[1] || 0);
+
+  // Bound the driver by wall clock and by idleness, not by iteration count: a
+  // client's view lands a tick after the host's, so a good fraction of passes
+  // find nobody holding a turn yet. Counting those against a fixed budget
+  // starves the run long before the match is decided.
+  const deadline = Date.now() + 180000;
+  let idle = 0;
+
+  for (;;) {
+    if ($(A, '.over')) break;
+    if (Date.now() > deadline) { say(`stopped at the 180s deadline after ${plays} plays`); break; }
+    if (idle > 400) { say(`stopped: nothing actionable for ${idle} passes after ${plays} plays`); break; }
+    if (FREEZE && plays >= FREEZE) { say(`frozen after ${plays} plays for inspection`); break; }
+
+    // Nobody should end up holding turn actions on two screens at once.
+    //
+    // A client's view arrives a tick after the host has already re-rendered
+    // itself, so a panel can briefly still show the turn it just lost. That
+    // window is cosmetic — the authority check below is what actually matters —
+    // so only count it if it survives a settle.
+    const holdingNow = () => PANELS.filter((p) => liveButtons(p).some((b) =>
+      b.classList.contains('act') && !b.classList.contains('uno') && !b.classList.contains('catch')));
+    if (holdingNow().length > 1) {
+      await sleep(80);
+      if (holdingNow().length > 1) bothLive++;
+    }
+
+    // Grab a free catch or Uno call whenever the UI offers one — that exercises
+    // the off-turn paths without needing to orchestrate them.
+    const unoBtn = PANELS.map((p) => $(p, '.actions .uno')).find(Boolean);
+    if (unoBtn && Math.random() < 0.6) { unoBtn.click(); await sleep(15); }
+    const catchBtn = PANELS.map((p) => $(p, '.actions .catch')).find(Boolean);
+    if (catchBtn) { catchBtn.click(); catches++; await sleep(15); continue; }
+
+    const live = turnPanel();
+    if (!live) { idle++; await sleep(30); continue; }
+    idle = 0;
+
+    if ($(live, '.callout')?.textContent.includes('Chain')) chains++;
+
+    const playable = $$(live, '.card.playable');
+    const btns = liveButtons(live).filter((b) => b.classList.contains('act')
+      && !b.classList.contains('uno') && !b.classList.contains('catch'));
+
+    if (playable.length && Math.random() < 0.85) {
+      playable[Math.floor(Math.random() * playable.length)].click();
+      await sleep(15);
+      // A wild opens the colour picker; answer it.
+      const sw = $$(live, '.picker .sw');
+      if (sw.length) { wilds++; sw[Math.floor(Math.random() * sw.length)].click(); }
+      plays++;
+    } else if (btns.length) {
+      const btn = btns[Math.floor(Math.random() * btns.length)];
+      if (/Challenge/i.test(btn.textContent)) challenges++;
+      if (/^Draw/i.test(btn.textContent)) draws++;
+      btn.click();
+    } else {
+      idle++;
+      await sleep(30);
+      continue;
+    }
+
+    await sleep(25);
+
+    // The round-over tally: let the host deal the next one.
+    const go = $(A, '.over .go');
+    if (go && !$(A, '.over h2').textContent.includes('wins the match')) {
+      rounds++;
+      go.click();
+      await sleep(60);
+    }
+  }
+
+  check(plays > 25, `played ${plays} cards through the host`);
+  check(bothLive === 0, 'two players were never left holding a turn at the same time');
+
+  // ---- the host is the authority ----
+  // Force the situation the render lag only hints at: make an off-turn player
+  // click a card. The host must drop it on the floor.
+  if (!$(A, '.over')) {
+    const onTurn = turnPanel();
+    const offTurn = PANELS.find((p) => p !== onTurn);
+    if (onTurn && offTurn) {
+      const before = $(A, '.discardpile .card')?.dataset.id;
+      const beforeHand = handIds(offTurn).length;
+      // The off-turn panel renders no .playable cards, so click one anyway.
+      const victim = $$(offTurn, '.hand .card')[0];
+      victim?.click();
+      await sleep(120);
+      check($(A, '.discardpile .card')?.dataset.id === before,
+        'a card clicked by an off-turn player never reaches the discard');
+      check(handIds(offTurn).length === beforeHand,
+        "and never leaves that player's hand");
+    }
+  }
+  check(rounds >= 1, `completed ${rounds} round(s) with scoring`);
+  say(`note  this run: ${draws} draws, ${wilds} wilds, ${chains} chain moments, ${challenges} challenges, ${catches} catches`);
+
+  // ---- the table stayed consistent ----
+  const tops = PANELS.map((p) => $(p, '.discardpile .card')?.dataset.id);
+  check(new Set(tops).size === 1 && tops[0], 'all three players see the same card face up');
+  // What each panel shows for its two opponents must add up to what those two
+  // players actually hold. Counts are all a player gets, so they'd better be right.
+  check(PANELS.every((p) => {
+    const shown = $$(p, '.opp .count').reduce((n, el) => n + Number(el.textContent), 0);
+    const actual = PANELS.filter((q) => q !== p).reduce((n, q) => n + handIds(q).length, 0);
+    return shown === actual;
+  }), 'the opponent counts each player sees match the hands actually held');
+
+  // Cards are conserved: every hand plus the pile plus the discard is 108.
+  const totalHands = PANELS.reduce((n, p) => n + handIds(p).length, 0);
+  const pile = Number($(A, '.pilecount').textContent);
+  say(`note  ${totalHands} cards in hands, ${pile} in the draw pile`);
+  check(totalHands + pile <= 108, 'no cards were conjured into existence');
+
+  // ---- a leak check again, mid-game ----
+  const late = PANELS.map(handIds);
+  check(late[0].filter((id) => allCardIds(B).includes(id)).length === 0,
+    "the host's hand is still invisible to a joiner after a full round");
+
+  // ---- bad code ----
+  const D = document.createElement('div');
+  D.id = 'panel-uno';
+  document.body.appendChild(D);
+  uno.init(D, document.createElement('div'));
+  $(D, '.name').value = 'Nobody';
+  $(D, '.codein').value = 'ZZZZZ';
+  $(D, '.join').click();
+  await waitFor(() => $(D, '.lobbyerr')?.textContent?.length > 0, 'error for a bad code', 15000);
+  check(/No room/i.test($(D, '.lobbyerr').textContent),
+    'joining a nonexistent code fails with a clear message');
+  D.remove();
+} catch (err) {
+  check(false, 'threw: ' + err.message);
+  console.error(err);
+}
+
+say('');
+say(failed ? `${failed} CHECK(S) FAILED` : 'ALL CHECKS PASSED', failed ? 'bad' : 'ok');
+document.title = failed ? `FAIL (${failed})` : 'ALL PASS';
+</script>
+</body>
+</html>

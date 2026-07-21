@@ -1,72 +1,9 @@
-/* Uno — lobby + table. Scoped to #panel-uno. Tokens from css/app.css.
+/* Uno — table. Scoped to #panel-uno. Tokens from css/app.css.
 
-   The lobby/waiting-room block deliberately mirrors ludo.css rather than
-   sharing it: each game owns its own look, and the shell only guarantees the
-   design tokens. If a third game copies it again, that's the moment to lift it
-   into app.css — not before. */
+   The lobby and waiting-room styling lives in app.css now: it was identical in
+   three games, which was the bar this file set for lifting it. */
 
 /* NB: never set `display` on #panel-uno — see the note in meridian.css. */
-
-/* ---- lobby ---- */
-#panel-uno .lobby {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 20px; overflow-y: auto;
-}
-#panel-uno .lobby-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  padding: 26px; width: 100%; max-width: 380px;
-}
-#panel-uno .lobby-card h2 { margin: 0 0 4px; font-size: 20px; }
-#panel-uno .lobby-card .lead { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
-#panel-uno .field { margin-bottom: 14px; }
-#panel-uno .field label {
-  display: block; font-size: 11px; text-transform: uppercase;
-  letter-spacing: .09em; color: var(--muted); margin-bottom: 6px;
-}
-#panel-uno .field input { width: 100%; }
-#panel-uno .row { display: flex; gap: 8px; }
-#panel-uno .row input { flex: 1; min-width: 0; }
-#panel-uno .lobby-card button { width: 100%; padding: 11px; }
-#panel-uno .row button { width: auto; flex: none; }
-#panel-uno .or {
-  display: flex; align-items: center; gap: 10px;
-  color: var(--muted); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .09em; margin: 18px 0;
-}
-#panel-uno .or::before, #panel-uno .or::after {
-  content: ''; flex: 1; height: 1px; background: var(--line);
-}
-#panel-uno .code-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-transform: uppercase; letter-spacing: .22em; font-size: 17px;
-}
-#panel-uno .lobby .err { margin-top: 10px; text-align: center; }
-
-/* ---- waiting room ---- */
-#panel-uno .code-display {
-  text-align: center; background: var(--panel-2);
-  border: 1px solid var(--line); border-radius: 10px;
-  padding: 14px; margin-bottom: 16px;
-}
-#panel-uno .code-display .cap {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
-}
-#panel-uno .code-display .code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 34px; font-weight: 700; letter-spacing: .18em;
-  color: var(--accent); margin: 4px 0 10px;
-}
-#panel-uno .code-display button { width: auto; padding: 6px 12px; font-size: 13px; }
-
-#panel-uno .seats { list-style: none; margin: 0 0 16px; padding: 0; }
-#panel-uno .seats li {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 11px; border-radius: 8px; margin-bottom: 6px;
-  background: var(--panel-2); border: 1px solid var(--line);
-}
-#panel-uno .seats .nm { flex: 1; font-weight: 500; }
-#panel-uno .seats .badge { font-size: 11px; color: var(--muted); }
-#panel-uno .hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 10px; }
 
 /* Seat colours double as the suit colours, so one set of rules covers both. */
 #panel-uno .chip { width: 14px; height: 14px; border-radius: 50%; flex: none; }
@@ -282,7 +219,6 @@
 #panel-uno .tally .mini { flex: 1; display: flex; gap: 3px; flex-wrap: wrap; color: var(--muted); }
 #panel-uno .tally .pts { font-weight: 700; font-variant-numeric: tabular-nums; }
 
-#panel-uno .bootfail { padding: 30px; color: var(--danger); }
 
 @media (max-width: 820px) {
   #panel-uno .table { flex-direction: column; }

@@ -12,8 +12,9 @@
 import meridian from './games/meridian.js';
 import ludo from './games/ludo/index.js';
 import uno from './games/uno/index.js';
+import xo from './games/xo/index.js';
 
-const GAMES = [meridian, ludo, uno];
+const GAMES = [meridian, ludo, uno, xo];
 
 const tabsEl = document.getElementById('tabs');
 const panelsEl = document.getElementById('panels');

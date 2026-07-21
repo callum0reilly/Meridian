@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>X and O's two-player harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/xo.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 72vh; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-xo { flex: 1; min-height: 0; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  #results div { padding: 2px 0; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="rig">
+  <div class="seatbox"><h3>Host (created the room)</h3><div class="hdr" id="hdrA"></div><div id="panel-xo" class="panel" data-who="A"></div></div>
+  <div class="seatbox"><h3>Joiner (entered the code)</h3><div class="hdr" id="hdrB"></div><div id="panel-xo" class="panel" data-who="B"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+import { install } from './fake-peer.js';
+install();                                  // must land before any room is made
+const xo = (await import('../js/games/xo/index.js')).default;
+
+const out = document.getElementById('results');
+let failed = 0;
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const check = (cond, msg) => {
+  if (!cond) failed++;
+  say((cond ? 'PASS  ' : 'FAIL  ') + msg, cond ? 'ok' : 'bad');
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+const PANELS = [A, B];
+xo.init(A, document.getElementById('hdrA'));
+xo.init(B, document.getElementById('hdrB'));
+
+const $ = (root, sel) => root.querySelector(sel);
+const $$ = (root, sel) => [...root.querySelectorAll(sel)];
+const cells = (root) => $$(root, '.cell');
+
+// A ghost is the hover preview of your own mark on an *empty* square, so it
+// must not count as a played mark when reading the board back.
+const boardOf = (root) => cells(root).map((c) => {
+  const m = c.querySelector('.mark:not(.ghost)');
+  return m ? (m.classList.contains('x') ? 'X' : 'O') : '.';
+}).join('');
+
+const liveCells = (root) => cells(root).filter((c) => !c.disabled).map((c) => +c.dataset.i);
+
+/** Click a square, then wait until both screens agree it landed. */
+async function move(panel, i, mark) {
+  cells(panel)[i].click();
+  await waitFor(() => PANELS.every((p) => boardOf(p)[i] === mark),
+    `${panel.dataset.who}'s ${mark} on square ${i}`);
+}
+
+try {
+  // ---- create + join ----
+  $(A, '.name').value = 'Callum';
+  $(A, '.create').click();
+  await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+  const code = $(A, '.codeval').textContent;
+  check(/^[A-Z0-9]{5}$/.test(code), `host created room with a 5-char code: ${code}`);
+  check($(A, '.start').disabled, 'start is disabled with only 1 player');
+
+  $(B, '.name').value = 'Mate';
+  $(B, '.codein').value = code;
+  $(B, '.join').click();
+  await waitFor(() => $(A, '.seats')?.children.length === 2, 'both in the lobby');
+  check(true, 'the joiner reached the room using only the code');
+  check(!$(A, '.start').disabled, 'start enabled at 2 players');
+  check($(B, '.start').hidden, 'only the host sees the start button');
+
+  // ---- start ----
+  $(A, '.start').click();
+  await waitFor(() => PANELS.every((p) => $(p, '.grid')), 'both boards');
+  check(PANELS.every((p) => cells(p).length === 9), 'both players got a nine-square board');
+  check(PANELS.every((p) => boardOf(p) === '.........'), 'both boards start empty');
+
+  // ---- turn ownership ----
+  check(liveCells(A).length === 9, 'the host opens, so all nine squares are live for them');
+  check(liveCells(B).length === 0, 'the waiting player cannot click anything');
+  check($(A, '.turnwho').textContent.includes('Your turn'), 'host is told it is their turn');
+  check($(A, '.turnwho').textContent.includes('you are X'), 'host is told they are X');
+  check($(B, '.turnwho').textContent.includes('you are O'), 'joiner is told they are O');
+
+  // ---- a round, played out to a win ----
+  await move(A, 0, 'X');
+  check(liveCells(A).length === 0, 'after moving, the host cannot move again');
+  check(liveCells(B).length === 8, 'the turn passed, and the taken square is not offered');
+  check(!liveCells(B).includes(0), 'the occupied square is not clickable');
+
+  await move(B, 3, 'O');
+  await move(A, 1, 'X');
+  await move(B, 4, 'O');
+  check(!$(A, '.over'), 'no result overlay while the round is live');
+  await move(A, 2, 'X');            // completes the top row
+
+  await waitFor(() => PANELS.every((p) => $(p, '.over')), 'the result overlay');
+  check(PANELS.every((p) => $$(p, '.cell.win').length === 3), 'the winning line is highlighted on both screens');
+  check($$(A, '.cell.win').map((c) => +c.dataset.i).join(',') === '0,1,2', 'the highlighted line is the top row');
+  check($(A, '.over').textContent.includes('Callum'), 'the overlay names the winner');
+  check($(A, '.go') && !$(B, '.go'), 'only the host can start the next round');
+  check($$(A, '.scores .pts')[0].textContent === '1', 'the winner is now on one');
+  check(liveCells(B).length === 0, 'a finished board is inert');
+
+  // ---- next round: the marks swap ----
+  $(A, '.go').click();
+  await waitFor(() => PANELS.every((p) => boardOf(p) === '.........' && !$(p, '.over')), 'a fresh board');
+  check($(B, '.turnwho').textContent.includes('you are X'), 'round 2: the joiner is X');
+  check($(A, '.turnwho').textContent.includes('you are O'), 'round 2: the host is O');
+  check(liveCells(B).length === 9 && liveCells(A).length === 0, 'round 2 opens with the joiner to move');
+  check($(A, '.turnwho').textContent.includes('Round 2'), 'the round counter moved on');
+
+  // ---- play that round to a draw ----
+  const drawn = [[B, 0], [A, 2], [B, 1], [A, 3], [B, 5], [A, 4], [B, 6], [A, 7], [B, 8]];
+  for (const [panel, i] of drawn) await move(panel, i, panel === B ? 'X' : 'O');
+
+  await waitFor(() => $(A, '.over'), 'the drawn-round overlay');
+  check($(A, '.over').textContent.includes('Drawn'), 'a full board with no line is reported as a draw');
+  check($$(A, '.cell.win').length === 0, 'a draw highlights no line');
+  check($(A, '.drawrow .pts').textContent === '1', 'the drawn-round tally went up');
+  check($$(A, '.scores .pts')[0].textContent === '1', 'a draw scored nobody');
+
+  // ---- and the draw still hands the opening move over ----
+  $(A, '.go').click();
+  await waitFor(() => PANELS.every((p) => boardOf(p) === '.........' && !$(p, '.over')), 'round 3');
+  check(liveCells(A).length === 9 && liveCells(B).length === 0,
+    'round 3 opens with the host again — a draw does not stall the alternation');
+  check($(A, '.turnwho').textContent.includes('you are X'), 'round 3: the host is back on X');
+
+  // ---- both screens always agree ----
+  check(boardOf(A) === boardOf(B), 'host and joiner render the same board');
+  check($(A, '.logwrap').children.length === $(B, '.logwrap').children.length,
+    'both players see the same game log');
+} catch (err) {
+  failed++;
+  say('THREW  ' + err.message, 'bad');
+  console.error(err);
+}
+
+say(failed ? `${failed} check(s) failed` : 'all checks passed', failed ? 'bad' : 'ok');
+document.title = failed ? `FAILED (${failed})` : 'ALL PASSED';
+document.body.dataset.done = failed ? 'fail' : 'pass';
+</script>
+</body>
+</html>

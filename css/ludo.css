@@ -4,66 +4,8 @@
    shell's `.panel[hidden]` rule hides inactive tabs and an id selector wins
    against it. */
 
-/* ---- lobby ---- */
-#panel-ludo .lobby {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  padding: 20px; overflow-y: auto;
-}
-#panel-ludo .lobby-card {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-  padding: 26px; width: 100%; max-width: 380px;
-}
-#panel-ludo .lobby-card h2 { margin: 0 0 4px; font-size: 20px; }
-#panel-ludo .lobby-card .lead { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
-#panel-ludo .field { margin-bottom: 14px; }
-#panel-ludo .field label {
-  display: block; font-size: 11px; text-transform: uppercase;
-  letter-spacing: .09em; color: var(--muted); margin-bottom: 6px;
-}
-#panel-ludo .field input { width: 100%; }
-#panel-ludo .row { display: flex; gap: 8px; }
-#panel-ludo .row input { flex: 1; min-width: 0; }
-#panel-ludo .lobby-card button { width: 100%; padding: 11px; }
-#panel-ludo .row button { width: auto; flex: none; }
-#panel-ludo .or {
-  display: flex; align-items: center; gap: 10px;
-  color: var(--muted); font-size: 11px; text-transform: uppercase;
-  letter-spacing: .09em; margin: 18px 0;
-}
-#panel-ludo .or::before, #panel-ludo .or::after {
-  content: ''; flex: 1; height: 1px; background: var(--line);
-}
-#panel-ludo .code-input {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  text-transform: uppercase; letter-spacing: .22em; font-size: 17px;
-}
-#panel-ludo .lobby .err { margin-top: 10px; text-align: center; }
-
-/* ---- waiting room ---- */
-#panel-ludo .code-display {
-  text-align: center; background: var(--panel-2);
-  border: 1px solid var(--line); border-radius: 10px;
-  padding: 14px; margin-bottom: 16px;
-}
-#panel-ludo .code-display .cap {
-  font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted);
-}
-#panel-ludo .code-display .code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 34px; font-weight: 700; letter-spacing: .18em;
-  color: var(--accent); margin: 4px 0 10px;
-}
-#panel-ludo .code-display button { width: auto; padding: 6px 12px; font-size: 13px; }
-
-#panel-ludo .seats { list-style: none; margin: 0 0 16px; padding: 0; }
-#panel-ludo .seats li {
-  display: flex; align-items: center; gap: 10px;
-  padding: 9px 11px; border-radius: 8px; margin-bottom: 6px;
-  background: var(--panel-2); border: 1px solid var(--line);
-}
-#panel-ludo .seats .nm { flex: 1; font-weight: 500; }
-#panel-ludo .seats .badge { font-size: 11px; color: var(--muted); }
-#panel-ludo .seats li.gone { opacity: .5; }
+/* The lobby and waiting-room styling lives in app.css now — it was identical
+   in three games. Only the seat colours below are Ludo's own. */
 #panel-ludo .dot { width: 14px; height: 14px; border-radius: 50%; flex: none; }
 #panel-ludo .dot.red { background: var(--red); }
 #panel-ludo .dot.green { background: var(--green); }
@@ -159,7 +101,6 @@
 #panel-ludo .over .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
 #panel-ludo .over button { width: 100%; padding: 11px; }
 
-#panel-ludo .bootfail, .bootfail { padding: 30px; color: var(--danger); }
 
 #panel-ludo .banner {
   background: #2a1f10; border-bottom: 1px solid #6b4a1c;

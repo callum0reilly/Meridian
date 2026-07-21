@@ -37,6 +37,7 @@ import {
 } from './claude.js';
 import { review as gradeCard, dueQueue, deckStats, describeNext, GRADES } from './srs.js';
 import { loadDecks, saveDecks, makeDeck } from './store.js';
+import { downloadDeck } from './export.js';
 
 const MAX_MB = 50;
 
@@ -288,6 +289,7 @@ function init(root, header) {
           </div>
           <div class="deckdue">${s.due ? `<b>${s.due}</b> due` : esc(next)}</div>
           <button class="primary study" ${s.due ? '' : 'disabled'}>Study</button>
+          <button class="ghost dl" aria-label="Download ${esc(d.title)}">Download</button>
           <button class="ghost del" aria-label="Delete ${esc(d.title)}">Delete</button>
         </div>`;
     }).join('');
@@ -295,8 +297,10 @@ function init(root, header) {
     list.querySelectorAll('.deck').forEach((row) => {
       const deck = decks.find((d) => d.id === row.dataset.id);
       row.querySelector('.study').onclick = () => startSession(deck);
+      row.querySelector('.dl').onclick = () => downloadDeck(deck);
       row.querySelector('.del').onclick = () => {
-        if (!confirm(`Delete "${deck.title}" and its ${deck.cards.length} cards? This can't be undone.`)) return;
+        if (!confirm(`Delete "${deck.title}" and its ${deck.cards.length} cards? ` +
+                     'This can\'t be undone — download it first if you want to keep it.')) return;
         decks = decks.filter((d) => d.id !== deck.id);
         persist();
         renderDecks();

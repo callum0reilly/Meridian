@@ -112,7 +112,8 @@
 .deckdue { font-size: 12px; color: var(--muted); flex: none; min-width: 78px; text-align: right; }
 .deckdue b { color: var(--text); font-size: 14px; }
 .deck button { flex: none; padding: 7px 13px; font-size: 13px; }
-.deck .del { color: var(--muted); }
+.deck .dl, .deck .del { color: var(--muted); }
+.deck .dl:hover { color: var(--text); border-color: var(--accent); }
 .deck .del:hover { color: var(--danger); border-color: var(--danger); }
 
 /* ---- busy / done cards ---- */

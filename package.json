@@ -2,10 +2,10 @@
   "name": "meridian",
   "version": "1.0.0",
   "private": true,
-  "description": "Browser games you can play with friends over a room code. Static site, no build step.",
+  "description": "Browser games you can play with friends over a room code, plus study tools. Static site, no build step.",
   "type": "module",
   "scripts": {
     "start": "npx --yes serve@14 -l 8080 .",
-    "test": "node --test test/rules.test.mjs test/uno.test.mjs test/xo.test.mjs test/snake.test.mjs"
+    "test": "node --test test/rules.test.mjs test/uno.test.mjs test/xo.test.mjs test/snake.test.mjs test/cards.test.mjs test/srs.test.mjs test/pdflines.test.mjs"
   }
 }

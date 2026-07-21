@@ -51,8 +51,18 @@ header .spacer { flex: 1; }
 header .slot { display: flex; align-items: center; gap: 10px; }
 .tag { color: var(--muted); font-size: 13px; }
 
-/* ---- tabs ---- */
-.tabs { display: flex; gap: 4px; }
+/* ---- tabs ----
+   Grouped by section (Games / Study), with a rule and a caption between groups
+   rather than just extra spacing — spacing alone reads as a layout accident at
+   a glance, and the whole point of the grouping is that Study is a different
+   kind of thing from a game. */
+.tabs { display: flex; align-items: center; gap: 4px; }
+.tabgroup { display: flex; align-items: center; gap: 4px; }
+.tabgroup + .tabgroup { margin-left: 10px; padding-left: 14px; border-left: 1px solid var(--line); }
+.tabgroup-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .1em;
+  color: var(--muted); opacity: .65; margin-right: 2px; user-select: none;
+}
 .tabs button {
   background: none; border: 1px solid transparent; border-radius: 8px;
   padding: 7px 14px; color: var(--muted); font: inherit; font-weight: 500;
@@ -169,4 +179,8 @@ input:disabled { opacity: .5; }
   header { gap: 10px; padding: 8px 12px; flex-wrap: wrap; }
   .brand { font-size: 15px; }
   .tabs button { padding: 6px 10px; }
+  /* The section captions are the first thing to go when the strip is tight —
+     the dividing rule still carries the grouping without them. */
+  .tabgroup-label { display: none; }
+  .tabgroup + .tabgroup { margin-left: 6px; padding-left: 8px; }
 }

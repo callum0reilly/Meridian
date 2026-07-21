@@ -9,20 +9,32 @@
 //
 // ---- Why the approve screen exists ----
 //
-// The extractor reads document structure, not meaning (see cards.js), so on a
-// badly-structured PDF some of what it produces is junk. Hiding that behind a
-// "Generated 84 cards!" banner would mean discovering it one wrong card at a
-// time, mid-revision, which is exactly when you least want to be editing. The
-// approve screen puts the weakest part of the pipeline in front of the user
-// while it's cheap to fix, and it doubles as a first read-through of the
-// material, which is itself worth doing.
+// The cards are written by a model (see claude.js), which is a large step up
+// from the regexes it replaced but is still working from an extract of a PDF
+// and can still produce a card that's redundant, or subtly wrong, or tests
+// something the user already knows cold. Hiding that behind a "Generated 84
+// cards!" banner would mean discovering it one wrong card at a time,
+// mid-revision, which is exactly when you least want to be editing.
 //
-// Everything else about this module is deliberately solo and offline: no room
-// codes, no peers, nothing to share. The games are the social half of Meridian;
-// this is the half you use alone at midnight.
+// The screen also exists because generation now costs money. Cards are shown
+// before they're saved so the spend is visible against something concrete
+// rather than appearing on a bill weeks later.
+//
+// ---- Solo, but no longer offline ----
+//
+// No room codes, no peers, nothing to share — the games are the social half of
+// Meridian and this is the half you use alone at midnight. It is no longer
+// *offline*, though: importing a PDF sends its text to Anthropic, and the drop
+// zone says so. Studying an existing deck still needs no network at all, which
+// is the half that matters on a train.
 
 import { extractLines } from './pdf.js';
-import { extractCards } from './cards.js';
+import { linesToMarkdown } from './doctext.js';
+import {
+  generateCards, ClaudeError, MODELS,
+  loadKey, saveKey, looksLikeKey, loadModel, saveModel,
+  costOf, formatCost,
+} from './claude.js';
 import { review as gradeCard, dueQueue, deckStats, describeNext, GRADES } from './srs.js';
 import { loadDecks, saveDecks, makeDeck } from './store.js';
 
@@ -39,9 +51,31 @@ const LIBRARY_HTML = `
       <input type="file" accept="application/pdf,.pdf" hidden>
       <div class="drop-icon" aria-hidden="true">＋</div>
       <div class="drop-main">Drop a PDF here, or click to choose one</div>
-      <div class="drop-sub">Lecture slides, textbook chapters and glossaries work best. Nothing leaves your browser.</div>
+      <div class="drop-sub">Its text is sent to Claude to write the cards. Decks stay in this browser.</div>
     </label>
     <div class="err droperr"></div>
+
+    <details class="settings">
+      <summary>API key<span class="keystate"></span></summary>
+      <div class="settingsbody">
+        <p class="settingsnote">
+          Cards are written by Claude, which needs your own Anthropic API key. It's stored in
+          this browser only and sent straight to Anthropic — Meridian has no server and never
+          sees it. Usage is billed to your account, typically a few pence per document.
+          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a>.
+        </p>
+        <div class="keyrow">
+          <input class="keyinput" type="password" spellcheck="false" autocomplete="off"
+                 placeholder="sk-ant-…" aria-label="Anthropic API key">
+          <button class="ghost keysave">Save</button>
+        </div>
+        <div class="keyerr err"></div>
+        <label class="modelrow">
+          <span>Model</span>
+          <select class="modelpick" aria-label="Model"></select>
+        </label>
+      </div>
+    </details>
 
     <div class="decks"></div>
   </div>
@@ -180,8 +214,54 @@ function init(root, header) {
       if (file) startImport(file);
     });
 
+    renderSettings();
     renderDecks();
     updateTag();
+  }
+
+  /* ============================ settings ============================ */
+
+  /**
+   * The key panel.
+   *
+   * Opens itself when there's no key stored, because without one the drop zone
+   * above it does nothing — a collapsed `<details>` would leave a new user
+   * dropping a PDF and getting an error with the fix hidden behind a summary
+   * they had no reason to click.
+   */
+  function renderSettings() {
+    const box = el('settings');
+    const key = loadKey();
+    if (!key) box.open = true;
+
+    el('keystate').textContent = key ? 'Saved' : 'Needed';
+    el('keystate').className = 'keystate ' + (key ? 'ok' : 'missing');
+    el('keyinput').value = key;
+
+    el('modelpick').innerHTML = MODELS
+      .map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join('');
+    el('modelpick').value = loadModel();
+    el('modelpick').onchange = (ev) => saveModel(ev.target.value);
+
+    el('keysave').onclick = () => {
+      const value = el('keyinput').value.trim();
+      const err = el('keyerr');
+
+      // An empty box is "forget my key", which is the only way to clear it and
+      // shouldn't be blocked by the format check below.
+      if (value && !looksLikeKey(value)) {
+        err.textContent = 'That doesn\'t look like an Anthropic key — they start with sk-ant-.';
+        return;
+      }
+      if (!saveKey(value)) {
+        err.textContent = 'This browser refused to store the key (private mode?).';
+        return;
+      }
+      err.textContent = '';
+      el('keystate').textContent = value ? 'Saved' : 'Needed';
+      el('keystate').className = 'keystate ' + (value ? 'ok' : 'missing');
+      el('droperr').textContent = '';
+    };
   }
 
   function renderDecks() {
@@ -248,6 +328,17 @@ function init(root, header) {
       return;
     }
 
+    // Checked here rather than at the point of use so the whole PDF isn't read
+    // before the user is told the one thing that was going to stop them.
+    const apiKey = loadKey();
+    if (!apiKey) {
+      el('droperr').textContent = 'Add your Anthropic API key below first — that\'s what writes the cards.';
+      el('settings').open = true;
+      el('keyinput').focus();
+      return;
+    }
+    const model = loadModel();
+
     view = 'busy';
     root.innerHTML = BUSY_HTML;
     el('busysub').textContent = file.name;
@@ -275,12 +366,30 @@ function init(root, header) {
         return;
       }
 
-      el('busytitle').textContent = 'Building cards…';
-      const cards = extractCards(lines);
+      const markdown = linesToMarkdown(lines);
+
+      el('busytitle').textContent = 'Writing cards…';
+      el('barfill').style.width = '0%';
+      el('busysub').textContent = 'Reading the material…';
+
+      const { cards, usage, failed, total } = await generateCards(markdown, {
+        apiKey,
+        model,
+        pages,
+        signal: controller.signal,
+        onProgress: (done, chunks) => {
+          el('barfill').style.width = Math.round((done / chunks) * 100) + '%';
+          el('busysub').textContent = chunks > 1
+            ? `Section ${Math.min(done + 1, chunks)} of ${chunks}`
+            : 'Reading the material…';
+        },
+      });
+
+      if (controller.signal.aborted) return;
 
       if (!cards.length) {
-        showLibrary('No cards could be made from that PDF. It works best on documents with headings, ' +
-                    'or with terms defined as "X: ..." or "X means ...".');
+        showLibrary('No cards came back for that PDF. If it\'s mostly figures, tables or exercises, ' +
+                    'there may be nothing in it to test.');
         return;
       }
 
@@ -289,12 +398,22 @@ function init(root, header) {
         source: `${file.name} · ${pages} page${pages === 1 ? '' : 's'}`,
         cards,
         keep: new Set(cards.map((c) => c.id)),
+        cost: formatCost(costOf(usage, model)),
+        // A partial run still produces a usable deck, but silently handing back
+        // a short one would leave the user believing their chapter had less in
+        // it than it did. The approve screen says so instead.
+        failed,
+        total,
       };
       showApprove();
     } catch (err) {
       if (controller?.signal.aborted) return;
       console.error('[study] import failed', err);
-      showLibrary(err.message || 'That PDF could not be read.');
+      // ClaudeError messages are already written for the user; anything else is
+      // a PDF-side failure or a bug, and gets a generic line.
+      showLibrary(err instanceof ClaudeError
+        ? err.message
+        : err.message || 'That PDF could not be read.');
     } finally {
       controller = null;
     }
@@ -305,9 +424,12 @@ function init(root, header) {
   function showApprove() {
     view = 'review';
     root.innerHTML = REVIEW_HTML;
+    const shortfall = draft.failed
+      ? ` ${draft.failed} of ${draft.total} sections failed, so some of the document is missing.`
+      : '';
     el('reviewlead').textContent =
-      `${draft.cards.length} cards from ${draft.source}. Discard anything that isn't worth learning — ` +
-      'you can\'t edit them after saving.';
+      `${draft.cards.length} cards from ${draft.source}, for ${draft.cost}.${shortfall} ` +
+      'Discard anything that isn\'t worth learning — you can\'t edit them after saving.';
     el('decktitle').value = draft.title;
 
     el('cardlist').innerHTML = draft.cards.map((c) => `

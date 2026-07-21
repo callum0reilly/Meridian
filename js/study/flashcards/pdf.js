@@ -162,7 +162,7 @@ function lineLeading(gaps) {
 }
 
 /**
- * Read a PDF file into the line array `cards.js` consumes.
+ * Read a PDF file into the line array `doctext.js` consumes.
  *
  * @param {File|ArrayBuffer} file
  * @param {{onProgress?: (done:number,total:number)=>void, signal?: AbortSignal}} opts

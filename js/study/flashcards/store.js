@@ -76,7 +76,10 @@ function migrate(deck) {
         front: c.front,
         back: c.back,
         page: Number(c.page) || 1,
-        kind: c.kind || 'definition',
+        // `kind` used to be stored here — the old extractor tagged each card
+        // with the rule that produced it. Nothing ever read it, and the model
+        // doesn't work in those categories, so it's dropped on load rather than
+        // carried forward as a field that means nothing.
         srs: c.srs && typeof c.srs.due === 'number' ? c.srs : newSchedule(),
       })),
   };
@@ -116,7 +119,6 @@ export function makeDeck(title, source, cards) {
       front: c.front,
       back: c.back,
       page: c.page,
-      kind: c.kind,
       srs: newSchedule(),
     })),
   };

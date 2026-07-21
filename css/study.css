@@ -31,6 +31,53 @@
 .drop-sub { color: var(--muted); font-size: 12.5px; }
 .study .err { max-width: 780px; margin: 8px auto 0; text-align: center; }
 
+/* ---- API key settings ---- */
+.settings {
+  max-width: 780px; margin: 12px auto 0;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  font-size: 13px;
+}
+.settings summary {
+  padding: 11px 16px; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 10px;
+}
+.settings summary::-webkit-details-marker { display: none; }
+.settings summary::before {
+  content: '▸'; color: var(--muted); font-size: 11px; transition: transform .15s;
+}
+.settings[open] summary::before { transform: rotate(90deg); }
+.settings summary:hover { color: var(--accent); }
+
+/* Pushed to the right so the key's state reads as a status, not a second label. */
+.keystate { margin-left: auto; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+.keystate.ok { color: var(--win); }
+.keystate.missing { color: var(--yellow); }
+
+.settingsbody { padding: 0 16px 14px; border-top: 1px solid var(--line); padding-top: 13px; }
+.settingsnote { color: var(--muted); font-size: 12.5px; line-height: 1.55; margin: 0 0 12px; }
+.settingsnote a { color: var(--accent); }
+
+.keyrow { display: flex; gap: 8px; }
+.keyinput {
+  flex: 1; min-width: 0; padding: 8px 11px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); font: inherit; font-family: ui-monospace, monospace; font-size: 12.5px;
+}
+.keyinput:focus { border-color: var(--accent); outline: none; }
+/* Overrides the centred `.study .err` — inside the panel it belongs under the
+   field it refers to, not centred across the width of the page. */
+.settings .keyerr { text-align: left; margin: 0; max-width: none; font-size: 12px; }
+.settings .keyerr:not(:empty) { margin-top: 8px; }
+
+.modelrow { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.modelrow span { color: var(--muted); font-size: 12.5px; }
+.modelpick {
+  padding: 7px 10px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.modelpick:focus { border-color: var(--accent); outline: none; }
+
 /* ---- deck list ---- */
 .decks { max-width: 780px; margin: 30px auto 0; }
 .deckshead {

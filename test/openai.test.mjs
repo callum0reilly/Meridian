@@ -1,4 +1,4 @@
-// Tests for the pure parts of the Claude client — chunking, key validation and
+// Tests for the pure parts of the OpenAI client — chunking, key validation and
 // costing. Run: node --test test/
 //
 // The request itself isn't tested here: it needs a real key and real money, and
@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { chunk, looksLikeKey, costOf, formatCost, MODELS, DEFAULT_MODEL } from '../js/study/flashcards/claude.js';
+import { chunk, looksLikeKey, costOf, formatCost, MODELS, DEFAULT_MODEL } from '../js/study/flashcards/openai.js';
 
 /* ---------------- chunking ---------------- */
 
@@ -74,31 +74,38 @@ test('chunking loses no content', () => {
 /* ---------------- key validation ---------------- */
 
 test('looksLikeKey accepts a plausible key and rejects junk', () => {
-  assert.equal(looksLikeKey('sk-ant-api03-' + 'x'.repeat(40)), true);
-  assert.equal(looksLikeKey('  sk-ant-api03-' + 'x'.repeat(40) + '  '), true);
-  assert.equal(looksLikeKey('sk-ant-short'), false);
+  assert.equal(looksLikeKey('sk-proj-' + 'x'.repeat(40)), true);
+  assert.equal(looksLikeKey('sk-' + 'x'.repeat(48)), true);
+  assert.equal(looksLikeKey('  sk-proj-' + 'x'.repeat(40) + '  '), true);
+  assert.equal(looksLikeKey('sk-short'), false);
   assert.equal(looksLikeKey('not-a-key-at-all'), false);
   assert.equal(looksLikeKey(''), false);
   assert.equal(looksLikeKey(null), false);
+});
+
+test('an Anthropic key left over from the old provider is rejected', () => {
+  // The prefix check is loose, but not so loose that a key from the service this
+  // no longer talks to sails through and buys a 401 at the user's expense.
+  assert.equal(looksLikeKey('sk-ant-api03-' + 'x'.repeat(40)), false);
 });
 
 /* ---------------- costing ---------------- */
 
 test('costOf prices against the named model', () => {
   const usage = { input_tokens: 1e6, output_tokens: 1e6 };
-  const opus = MODELS.find((m) => m.id === 'claude-opus-4-8');
-  assert.equal(costOf(usage, 'claude-opus-4-8'), opus.inPer1M + opus.outPer1M);
+  const full = MODELS.find((m) => m.id === 'gpt-5');
+  assert.equal(costOf(usage, 'gpt-5'), full.inPer1M + full.outPer1M);
 });
 
 test('costOf falls back to the default model for an unknown id', () => {
   const usage = { input_tokens: 1e6, output_tokens: 0 };
   const fallback = MODELS.find((m) => m.id === DEFAULT_MODEL);
-  assert.equal(costOf(usage, 'claude-nonexistent'), fallback.inPer1M);
+  assert.equal(costOf(usage, 'gpt-nonexistent'), fallback.inPer1M);
 });
 
 test('a cheaper model costs less for the same work', () => {
   const usage = { input_tokens: 50_000, output_tokens: 10_000 };
-  assert.ok(costOf(usage, 'claude-haiku-4-5') < costOf(usage, 'claude-opus-4-8'));
+  assert.ok(costOf(usage, 'gpt-5-nano') < costOf(usage, 'gpt-5'));
 });
 
 test('formatCost stays meaningful when the number is tiny', () => {

@@ -1,4 +1,4 @@
-// Card generation, via the Claude API.
+// Card generation, via the OpenAI API.
 //
 // This is the part that replaced the regexes. The old extractor read document
 // shape and could only ever produce cards for material already written as
@@ -12,47 +12,50 @@
 // Meridian is a static site. There is no server here to hold a key on the
 // user's behalf, and a key shipped inside the JS would be a key anyone can read
 // out of devtools and spend. So the user brings their own, it goes in
-// localStorage, and it's sent from their browser straight to Anthropic —
-// which is why every request carries the direct-browser-access header below.
+// localStorage, and it's sent from their browser straight to OpenAI.
 //
-// That header's name is a warning, and it's aimed at exactly the mistake this
-// design avoids: sending *your* key from *your users'* browsers. Sending your
-// own key from your own browser to a service you hold the account with is the
-// one case where it's the right call, and it's what keeps this feature from
-// requiring a backend, a deploy target and a bill.
+// The rule this design respects is about *whose* key travels: sending your own
+// key from your own browser to a service you hold the account with is fine, and
+// it's what keeps this feature from requiring a backend, a deploy target and a
+// bill. Sending *your* key from *your users'* browsers is the mistake, and it is
+// the one this avoids.
 //
 // The tradeoff is honest and worth stating in the UI: this is a feature for
 // people who have an API key, not something you can hand to a classmate.
 //
 // ---- Why the document is chunked ----
 //
-// Not for the context window — the model takes a million tokens and a textbook
-// chapter is a few thousand. It's chunked because output is the real limit: a
-// 60-page chapter's worth of cards is far more than one response can hold, and
-// a request that hits its token ceiling comes back with the JSON cut off
-// mid-card. Chunking also means progress can move while it works, and one
-// failed chunk costs one chunk rather than the whole document.
+// Not for the context window — the model takes hundreds of thousands of tokens
+// and a textbook chapter is a few thousand. It's chunked because output is the
+// real limit: a 60-page chapter's worth of cards is far more than one response
+// can hold, and a request that hits its token ceiling comes back with the JSON
+// cut off mid-card. Chunking also means progress can move while it works, and
+// one failed chunk costs one chunk rather than the whole document.
 
 import { normalise } from './doctext.js';
 
-const API_URL = 'https://api.anthropic.com/v1/messages';
-const API_VERSION = '2023-06-01';
+const API_URL = 'https://api.openai.com/v1/responses';
 
-const KEY_STORE = 'meridian.study.anthropic.key.v1';
-const MODEL_STORE = 'meridian.study.anthropic.model.v1';
+const KEY_STORE = 'meridian.study.openai.key.v1';
+const MODEL_STORE = 'meridian.study.openai.model.v1';
+
+/** Storage this feature used when it ran on Anthropic. See forgetLegacyKey(). */
+const LEGACY_STORES = ['meridian.study.anthropic.key.v1', 'meridian.study.anthropic.model.v1'];
 
 /**
  * Models offered in settings.
  *
- * Opus is the default because it's the user's money and their revision, and
- * quietly spending less of the former to get worse cards isn't a call this code
- * should make on their behalf. The prices are here so the UI can show what a
- * document will cost before it's sent rather than after.
+ * The full model is the default because it's the user's money and their
+ * revision, and quietly spending less of the former to get worse cards isn't a
+ * call this code should make on their behalf. The prices are here so the UI can
+ * show what a document cost, and they are the one thing in this file that goes
+ * stale on someone else's schedule — check them against OpenAI's pricing page if
+ * the figures shown start to look wrong.
  */
 export const MODELS = [
-  { id: 'claude-opus-4-8', label: 'Opus 4.8 — best cards', inPer1M: 5, outPer1M: 25 },
-  { id: 'claude-sonnet-5', label: 'Sonnet 5 — balanced', inPer1M: 3, outPer1M: 15 },
-  { id: 'claude-haiku-4-5', label: 'Haiku 4.5 — cheapest', inPer1M: 1, outPer1M: 5 },
+  { id: 'gpt-5', label: 'GPT-5 — best cards', inPer1M: 1.25, outPer1M: 10 },
+  { id: 'gpt-5-mini', label: 'GPT-5 mini — balanced', inPer1M: 0.25, outPer1M: 2 },
+  { id: 'gpt-5-nano', label: 'GPT-5 nano — cheapest', inPer1M: 0.05, outPer1M: 0.4 },
 ];
 
 export const DEFAULT_MODEL = MODELS[0].id;
@@ -61,13 +64,22 @@ export const DEFAULT_MODEL = MODELS[0].id;
  * Characters of Markdown per request.
  *
  * Sized so the cards for one chunk comfortably fit inside MAX_TOKENS. Roughly
- * 6k input tokens in, at most ~8k out — the asymmetry is deliberate, because
- * dense glossary pages produce far more card text than the prose they came from.
+ * 6k input tokens in, at most ~8k of card text out — the asymmetry is
+ * deliberate, because dense glossary pages produce far more card text than the
+ * prose they came from.
  */
 const CHUNK_CHARS = 24000;
 
-/** Output ceiling per request. Under ~16k, so these don't need streaming. */
-const MAX_TOKENS = 8000;
+/**
+ * Output ceiling per request.
+ *
+ * Higher than the ~8k of cards a chunk can produce, because on a reasoning model
+ * this ceiling covers the reasoning tokens too. Sized at 8k for the answer and
+ * the same again for the thinking that precedes it: set it to the size of the
+ * answer alone and a chunk that thinks hard can run out of room before it has
+ * written a single card.
+ */
+const MAX_TOKENS = 16000;
 
 /** Chunks in flight at once. Enough to be quick, low enough to stay under rate limits. */
 const CONCURRENCY = 2;
@@ -109,15 +121,33 @@ export function saveModel(id) {
 }
 
 /**
+ * Drop the Anthropic key this feature used to store.
+ *
+ * Nothing reads it any more and no screen can show or clear it, so leaving it
+ * behind means a live credential sitting in localStorage that its owner has no
+ * way to reach. Called once when the library loads. It only ever deletes keys
+ * this app put there itself.
+ */
+export function forgetLegacyKey() {
+  try { for (const k of LEGACY_STORES) localStorage.removeItem(k); } catch { /* nothing to do */ }
+}
+
+/**
  * Shape check for a key, so an obvious typo is caught before it costs a request.
  *
  * Deliberately loose — it checks the prefix and a plausible length, not a full
- * format, because the exact tail of the key format is Anthropic's to change and
- * a validator that's stricter than the server rejects valid keys the day that
- * happens. The real check is the first 401.
+ * format, because the exact tail of the key format is OpenAI's to change and a
+ * validator that's stricter than the server rejects valid keys the day that
+ * happens. Project keys (sk-proj-…) and older account keys both pass. The real
+ * check is the first 401.
+ *
+ * The one exception is sk-ant-, which is excluded on purpose: this feature used
+ * to run on Anthropic, so pasting the old key back in is the single most likely
+ * wrong answer here, and it's one this check can name instead of charging a
+ * round trip to discover.
  */
 export function looksLikeKey(key) {
-  return /^sk-ant-\S{20,}$/.test((key || '').trim());
+  return /^sk-(?!ant-)\S{20,}$/.test((key || '').trim());
 }
 
 /* ============================== chunking ============================== */
@@ -190,7 +220,12 @@ Write cards that test understanding of the material, following these rules:
 
 Prefer fewer, better cards. A student who gets every card right should actually know the material.`;
 
-/** Response schema. Constrained so a malformed deck is impossible by construction. */
+/**
+ * Response schema. Constrained so a malformed deck is impossible by construction.
+ *
+ * Shaped to satisfy strict mode, which is what makes that guarantee hold: every
+ * object lists all of its properties as required and closes itself to extras.
+ */
 const SCHEMA = {
   type: 'object',
   properties: {
@@ -215,10 +250,10 @@ const SCHEMA = {
 /* ============================ the request ============================ */
 
 /** An error the UI should show verbatim, rather than a stack trace. */
-export class ClaudeError extends Error {
+export class OpenAIError extends Error {
   constructor(message, { retryable = false, status = 0 } = {}) {
     super(message);
-    this.name = 'ClaudeError';
+    this.name = 'OpenAIError';
     this.retryable = retryable;
     this.status = status;
   }
@@ -236,31 +271,61 @@ function describeFailure(status, body) {
   const detail = body?.error?.message || '';
   switch (status) {
     case 400:
-      return new ClaudeError(`The API rejected that request: ${detail}`, { status });
+      return new OpenAIError(`The API rejected that request: ${detail}`, { status });
     case 401:
-      return new ClaudeError('That API key was rejected. Check it in settings.', { status });
+      return new OpenAIError('That API key was rejected. Check it in settings.', { status });
     case 403:
-      return new ClaudeError('That API key isn\'t allowed to use this model.', { status });
+      return new OpenAIError('That API key isn\'t allowed to use this model.', { status });
     case 404:
-      return new ClaudeError('That model isn\'t available on your account.', { status });
+      return new OpenAIError('That model isn\'t available on your account.', { status });
     case 413:
-      return new ClaudeError('That section of the PDF was too large to send.', { status });
+      return new OpenAIError('That section of the PDF was too large to send.', { status });
     case 429:
-      return new ClaudeError('Rate limited by the API.', { retryable: true, status });
-    case 529:
-      return new ClaudeError('The API is busy.', { retryable: true, status });
+      // 429 is also how an exhausted balance arrives, and no amount of backing
+      // off will conjure credit. Only the rate limit is worth another attempt,
+      // and only one of these two is something the user can act on.
+      if (body?.error?.type === 'insufficient_quota') {
+        return new OpenAIError('That account has no API credit left.', { status });
+      }
+      return new OpenAIError('Rate limited by the API.', { retryable: true, status });
+    case 503:
+      return new OpenAIError('The API is busy.', { retryable: true, status });
     default:
-      if (status >= 500) return new ClaudeError('The API had a problem.', { retryable: true, status });
-      return new ClaudeError(detail || `The API returned ${status}.`, { status });
+      if (status >= 500) return new OpenAIError('The API had a problem.', { retryable: true, status });
+      return new OpenAIError(detail || `The API returned ${status}.`, { status });
   }
+}
+
+/**
+ * Pull the model's text out of a response.
+ *
+ * `output` is a list of items rather than a single message: reasoning items come
+ * first and carry no text, so this looks for the message and the output_text
+ * part inside it rather than indexing a position that moves.
+ */
+function outputText(data) {
+  for (const item of data.output || []) {
+    if (item.type !== 'message') continue;
+    for (const part of item.content || []) {
+      // A refusal is a successful response carrying a refusal in place of the
+      // text, so it has to be caught here rather than by status code. It
+      // shouldn't fire on course material, but "shouldn't" and "doesn't" differ
+      // and the alternative is a confusing parse failure.
+      if (part.type === 'refusal') {
+        throw new OpenAIError('The model declined to generate cards for that section.');
+      }
+      if (part.type === 'output_text') return part.text;
+    }
+  }
+  return '';
 }
 
 /**
  * One chunk of Markdown, one request, its cards back.
  *
- * `temperature` is deliberately absent: it's rejected outright by Opus 4.8 and
- * Sonnet 5, and the variation it used to buy is not something card generation
- * wants anyway.
+ * `temperature` is deliberately absent: the reasoning models reject it outright,
+ * and the variation it used to buy is not something card generation wants
+ * anyway.
  */
 async function requestCards(markdown, { apiKey, model, signal }) {
   const res = await fetch(API_URL, {
@@ -268,26 +333,25 @@ async function requestCards(markdown, { apiKey, model, signal }) {
     signal,
     headers: {
       'content-type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': API_VERSION,
-      // Required for the API to answer a browser at all — see the note at the
-      // top of this file about whose key this is.
-      'anthropic-dangerous-direct-browser-access': 'true',
+      authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       model,
-      max_tokens: MAX_TOKENS,
-      system: SYSTEM,
-      // Adaptive thinking, because deciding what in a passage is worth being
-      // tested on is a judgement call and the cards are visibly better with it
-      // on. Medium effort holds the cost of that judgement down on a task that
-      // is, after all, mostly extraction.
-      thinking: { type: 'adaptive' },
-      output_config: {
-        effort: 'medium',
-        format: { type: 'json_schema', schema: SCHEMA },
+      instructions: SYSTEM,
+      input: [{ role: 'user', content: markdown }],
+      max_output_tokens: MAX_TOKENS,
+      // Deciding what in a passage is worth being tested on is a judgement call,
+      // and the cards are visibly better when the model reasons about it first.
+      // Medium effort holds the cost of that judgement down on a task that is,
+      // after all, mostly extraction.
+      reasoning: { effort: 'medium' },
+      text: {
+        format: { type: 'json_schema', name: 'cards', strict: true, schema: SCHEMA },
       },
-      messages: [{ role: 'user', content: markdown }],
+      // Each chunk is independent, so there is no thread to keep — and leaving
+      // the user's course material on someone else's server is not a choice this
+      // feature should make for them.
+      store: false,
     }),
   });
 
@@ -307,26 +371,20 @@ async function requestCards(markdown, { apiKey, model, signal }) {
 
   const data = await res.json();
 
-  // A refusal is a successful HTTP response with no content, so this has to be
-  // checked before reading the body. It shouldn't fire on course material, but
-  // "shouldn't" and "doesn't" differ and the alternative is a confusing crash.
-  if (data.stop_reason === 'refusal') {
-    throw new ClaudeError('The model declined to generate cards for that section.');
-  }
   // Structured output makes malformed JSON impossible but not *truncated* JSON:
   // hitting the ceiling cuts the response off and the parse below fails.
-  if (data.stop_reason === 'max_tokens') {
-    throw new ClaudeError('That section produced more cards than one response could hold.');
+  if (data.status === 'incomplete' && data.incomplete_details?.reason === 'max_output_tokens') {
+    throw new OpenAIError('That section produced more cards than one response could hold.');
   }
 
-  const text = (data.content || []).find((b) => b.type === 'text')?.text;
+  const text = outputText(data);
   if (!text) return { cards: [], usage: data.usage };
 
   let parsed;
   try {
     parsed = JSON.parse(text);
   } catch {
-    throw new ClaudeError('The API returned a response this app could not read.');
+    throw new OpenAIError('The API returned a response this app could not read.');
   }
 
   return { cards: Array.isArray(parsed.cards) ? parsed.cards : [], usage: data.usage };
@@ -346,7 +404,7 @@ async function requestWithRetry(markdown, opts) {
       return await requestCards(markdown, opts);
     } catch (err) {
       if (err.name === 'AbortError') throw err;
-      if (!(err instanceof ClaudeError) || !err.retryable || attempt === MAX_ATTEMPTS) throw err;
+      if (!(err instanceof OpenAIError) || !err.retryable || attempt === MAX_ATTEMPTS) throw err;
       last = err;
       // Honour the server's own retry-after when it sends one; otherwise back
       // off exponentially from a second.
@@ -400,7 +458,7 @@ function cleanCard(raw, pages) {
  * @returns {Promise<{cards:Array, usage:object, failed:number, total:number}>}
  */
 export async function generateCards(markdown, { apiKey, model, pages = 1, signal, onProgress } = {}) {
-  if (!apiKey) throw new ClaudeError('No API key set.');
+  if (!apiKey) throw new OpenAIError('No API key set.');
 
   const pieces = chunk(markdown);
   if (!pieces.length) return { cards: [], usage: emptyUsage(), failed: 0, total: 0 };
@@ -466,6 +524,8 @@ const emptyUsage = () => ({ input_tokens: 0, output_tokens: 0 });
 function addUsage(total, usage) {
   if (!usage) return;
   total.input_tokens += usage.input_tokens || 0;
+  // output_tokens already counts the reasoning tokens, which bill at the output
+  // rate — so what this adds up is the whole bill, not the visible half of it.
   total.output_tokens += usage.output_tokens || 0;
 }
 

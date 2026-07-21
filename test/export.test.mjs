@@ -46,11 +46,11 @@ test('the deck round-trips through JSON unchanged', () => {
 test('the file holds nothing beyond the deck', () => {
   // Guards against a future field on the deck object — a cached PDF, an API
   // key, a draft — riding along into a file the user may well share.
-  const src = { ...deck(), apiKey: 'sk-ant-secret', pdfBytes: 'AAAA' };
+  const src = { ...deck(), apiKey: 'sk-proj-secret', pdfBytes: 'AAAA' };
   const out = deckToFile(src, T0);
 
   assert.deepEqual(Object.keys(out.deck).sort(), ['cards', 'created', 'id', 'source', 'title']);
-  assert.equal(JSON.stringify(out).includes('sk-ant-secret'), false);
+  assert.equal(JSON.stringify(out).includes('sk-proj-secret'), false);
 });
 
 /* ---------------- filenames ---------------- */

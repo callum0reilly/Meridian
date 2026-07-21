@@ -9,7 +9,7 @@
 //
 // ---- Why the approve screen exists ----
 //
-// The cards are written by a model (see claude.js), which is a large step up
+// The cards are written by a model (see openai.js), which is a large step up
 // from the regexes it replaced but is still working from an extract of a PDF
 // and can still produce a card that's redundant, or subtly wrong, or tests
 // something the user already knows cold. Hiding that behind a "Generated 84
@@ -24,17 +24,17 @@
 //
 // No room codes, no peers, nothing to share — the games are the social half of
 // Meridian and this is the half you use alone at midnight. It is no longer
-// *offline*, though: importing a PDF sends its text to Anthropic, and the drop
+// *offline*, though: importing a PDF sends its text to OpenAI, and the drop
 // zone says so. Studying an existing deck still needs no network at all, which
 // is the half that matters on a train.
 
 import { extractLines } from './pdf.js';
 import { linesToMarkdown } from './doctext.js';
 import {
-  generateCards, ClaudeError, MODELS,
-  loadKey, saveKey, looksLikeKey, loadModel, saveModel,
+  generateCards, OpenAIError, MODELS,
+  loadKey, saveKey, looksLikeKey, loadModel, saveModel, forgetLegacyKey,
   costOf, formatCost,
-} from './claude.js';
+} from './openai.js';
 import { review as gradeCard, dueQueue, deckStats, describeNext, GRADES } from './srs.js';
 import { loadDecks, saveDecks, makeDeck } from './store.js';
 import { downloadDeck } from './export.js';
@@ -52,7 +52,7 @@ const LIBRARY_HTML = `
       <input type="file" accept="application/pdf,.pdf" hidden>
       <div class="drop-icon" aria-hidden="true">＋</div>
       <div class="drop-main">Drop a PDF here, or click to choose one</div>
-      <div class="drop-sub">Its text is sent to Claude to write the cards. Decks stay in this browser.</div>
+      <div class="drop-sub">Its text is sent to OpenAI to write the cards. Decks stay in this browser.</div>
     </label>
     <div class="err droperr"></div>
 
@@ -60,14 +60,14 @@ const LIBRARY_HTML = `
       <summary>API key<span class="keystate"></span></summary>
       <div class="settingsbody">
         <p class="settingsnote">
-          Cards are written by Claude, which needs your own Anthropic API key. It's stored in
-          this browser only and sent straight to Anthropic — Meridian has no server and never
+          Cards are written by GPT-5, which needs your own OpenAI API key. It's stored in
+          this browser only and sent straight to OpenAI — Meridian has no server and never
           sees it. Usage is billed to your account, typically a few pence per document.
-          <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">Get a key</a>.
+          <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">Get a key</a>.
         </p>
         <div class="keyrow">
           <input class="keyinput" type="password" spellcheck="false" autocomplete="off"
-                 placeholder="sk-ant-…" aria-label="Anthropic API key">
+                 placeholder="sk-…" aria-label="OpenAI API key">
           <button class="ghost keysave">Save</button>
         </div>
         <div class="keyerr err"></div>
@@ -150,6 +150,11 @@ const DONE_HTML = `
 `;
 
 function init(root, header) {
+  // This feature used to run on Anthropic, and a user who used it then still has
+  // that key in localStorage with nothing left that can read, show or clear it.
+  // Drop it on the way past rather than leaving a live credential stranded.
+  forgetLegacyKey();
+
   let decks = loadDecks();
   let view = 'library';
   let visible = false;
@@ -251,7 +256,9 @@ function init(root, header) {
       // An empty box is "forget my key", which is the only way to clear it and
       // shouldn't be blocked by the format check below.
       if (value && !looksLikeKey(value)) {
-        err.textContent = 'That doesn\'t look like an Anthropic key — they start with sk-ant-.';
+        err.textContent = /^sk-ant-/.test(value)
+          ? 'That\'s an Anthropic key. Flashcards use OpenAI now — you\'ll need a key from platform.openai.com.'
+          : 'That doesn\'t look like an OpenAI key — they start with sk-.';
         return;
       }
       if (!saveKey(value)) {
@@ -336,7 +343,7 @@ function init(root, header) {
     // before the user is told the one thing that was going to stop them.
     const apiKey = loadKey();
     if (!apiKey) {
-      el('droperr').textContent = 'Add your Anthropic API key below first — that\'s what writes the cards.';
+      el('droperr').textContent = 'Add your OpenAI API key below first — that\'s what writes the cards.';
       el('settings').open = true;
       el('keyinput').focus();
       return;
@@ -413,9 +420,9 @@ function init(root, header) {
     } catch (err) {
       if (controller?.signal.aborted) return;
       console.error('[study] import failed', err);
-      // ClaudeError messages are already written for the user; anything else is
+      // OpenAIError messages are already written for the user; anything else is
       // a PDF-side failure or a bug, and gets a generic line.
-      showLibrary(err instanceof ClaudeError
+      showLibrary(err instanceof OpenAIError
         ? err.message
         : err.message || 'That PDF could not be read.');
     } finally {

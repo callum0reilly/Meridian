@@ -22,10 +22,11 @@ import ludo from './games/ludo/index.js';
 import uno from './games/uno/index.js';
 import xo from './games/xo/index.js';
 import snake from './games/snake/index.js';
+import flappy from './games/flappy/index.js';
 import flashcards from './study/flashcards/index.js';
 
 const SECTIONS = [
-  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, snake] },
+  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, snake, flappy] },
   { id: 'study', label: 'Study', modules: [flashcards] },
 ];
 

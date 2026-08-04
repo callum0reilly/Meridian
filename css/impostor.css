@@ -1,0 +1,333 @@
+/* Impostor — the ship, the side panel, the meeting table and the minigames.
+   Scoped to #panel-impostor. The lobby and waiting-room furniture comes from
+   css/app.css; only the game itself is here. */
+
+/* NB: never set `display` on #panel-impostor — see the note in meridian.css. */
+
+#panel-impostor {
+  /* Taken off the canvas so the frame around the ship agrees with what is
+     drawn inside it. See the palette constants in index.js. */
+  --hull: #080b14;
+  --deck: #1b2438;
+  --crew: #4a9eff;
+  --imp: #e5484d;
+}
+
+#panel-impostor .table { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+#panel-impostor .stage {
+  flex: 1; min-width: 0; display: flex;
+  align-items: center; justify-content: center;
+  padding: 16px; overflow: auto;
+  background: radial-gradient(ellipse at 50% 40%, #131a29 0%, #0c1220 65%, #070a12 100%);
+}
+
+/* The ship is drawn at 960x600 and scaled to fit. Width-led: this view is
+   wide, so on any normal window it is the width that runs out first. Only the
+   width is set and `aspect-ratio` derives the height — give the box both and
+   the ratio has to give way, which stretches every circle on the canvas into
+   an ellipse. */
+#panel-impostor .screen {
+  position: relative;
+  width: min(100%, 1100px);
+  aspect-ratio: 960 / 600;
+  max-height: 100%;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--hull);
+  box-shadow: 0 16px 46px rgba(0, 0, 0, .6), 0 0 70px rgba(74, 158, 255, .08);
+}
+
+#panel-impostor .board {
+  display: block; width: 100%; height: 100%;
+  touch-action: none;      /* a tap uses the console; don't also pan the page */
+  user-select: none;
+}
+
+/* ---- contextual key prompts ----
+   Bottom-centre, over the canvas, because that is where your eyes already are.
+   pointer-events off: they sit on top of the board, and the board's click is
+   "use whatever I'm standing at". */
+#panel-impostor .prompts {
+  position: absolute; left: 0; right: 0; bottom: 14px;
+  display: flex; gap: 8px; justify-content: center; flex-wrap: wrap;
+  pointer-events: none;
+}
+#panel-impostor .prompt {
+  display: flex; align-items: center; gap: 7px;
+  padding: 7px 12px; border-radius: 999px;
+  font-size: 13px; font-weight: 500;
+  background: rgba(13, 19, 32, .86);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(3px);
+}
+#panel-impostor .prompt kbd {
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 5px; padding: 4px 6px;
+}
+#panel-impostor .prompt.danger { border-color: rgba(229, 72, 77, .6); color: #ffc4c4; }
+#panel-impostor .prompt.go { border-color: rgba(255, 197, 61, .5); color: #ffe6a8; }
+#panel-impostor .prompt.wait { opacity: .6; }
+
+/* ---- transient banner ----
+   For the one line you must not miss — "You were killed." Dead centre and
+   briefly, rather than in the log, which by definition you are not reading at
+   the moment you die. */
+#panel-impostor .banner {
+  position: absolute; left: 50%; top: 26%; transform: translateX(-50%);
+  padding: 12px 22px; border-radius: 10px;
+  background: rgba(12, 16, 26, .9); border: 1px solid var(--line);
+  font-size: 17px; font-weight: 600; letter-spacing: .04em;
+  pointer-events: none;
+}
+#panel-impostor .banner[hidden] { display: none; }
+
+/* ---- modal (task, meeting, game over) ---- */
+#panel-impostor .modal {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding: 18px; overflow-y: auto;
+  background: rgba(6, 9, 16, .78);
+  backdrop-filter: blur(2px);
+}
+#panel-impostor .modal[hidden] { display: none; }
+
+#panel-impostor .card2 {
+  width: 100%; max-width: 420px;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 20px;
+}
+
+/* ---- minigames ---- */
+#panel-impostor .mghead { display: flex; align-items: center; gap: 10px; }
+#panel-impostor .mghead h2 { margin: 0; font-size: 17px; flex: 1; }
+#panel-impostor .mgclose { padding: 4px 9px; line-height: 1; }
+#panel-impostor .mgbody { margin-top: 16px; }
+#panel-impostor .mg-hint { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+#panel-impostor .fake {
+  margin-top: 14px; font-size: 12px; color: var(--danger);
+  border-top: 1px solid var(--line); padding-top: 10px;
+}
+
+/* wiring */
+#panel-impostor .mg-wires {
+  display: grid; grid-template-columns: 46px 1fr 46px; gap: 8px; height: 190px;
+}
+#panel-impostor .mg-wires .side {
+  display: flex; flex-direction: column; justify-content: space-around;
+}
+#panel-impostor .mg-wires .node {
+  width: 40px; height: 26px; padding: 0; border-radius: 5px;
+  background: var(--c); border: 2px solid transparent;
+}
+#panel-impostor .mg-wires .node.picked { border-color: #fff; transform: scale(1.06); }
+#panel-impostor .mg-wires .node.wired { opacity: .55; cursor: default; }
+#panel-impostor .mg-wires .node.wrong { animation: imp-shake .26s; }
+#panel-impostor .mg-wires .links { width: 100%; height: 100%; overflow: visible; }
+@keyframes imp-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+/* card reader */
+#panel-impostor .mg-reader { text-align: center; }
+#panel-impostor .mg-reader .slot {
+  position: relative; height: 62px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-top: 3px solid var(--line);
+}
+#panel-impostor .mg-reader .card {
+  position: absolute; top: 8px; left: 0;
+  width: 82px; height: 44px; border-radius: 6px;
+  background: linear-gradient(135deg, #4a9eff, #2f6fc4);
+  color: #06111f; font: 700 12px/44px ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: .12em; cursor: grab; touch-action: none; user-select: none;
+}
+#panel-impostor .mg-reader .card.bad { background: linear-gradient(135deg, #e5484d, #a72a2e); }
+#panel-impostor .mg-reader .card.good { background: linear-gradient(135deg, #30a46c, #1d7a4c); }
+#panel-impostor .mg-reader .verdict {
+  margin-top: 12px; min-height: 18px; font-size: 13px; color: var(--muted);
+}
+
+/* hold + align share the gauge */
+#panel-impostor .gauge {
+  height: 14px; border-radius: 999px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+#panel-impostor .gauge .fill {
+  height: 100%; width: 0;
+  background: linear-gradient(90deg, #4a9eff, #30a46c);
+}
+
+#panel-impostor .mg-hold { text-align: center; }
+#panel-impostor .mg-hold .holdbtn {
+  margin-top: 18px; padding: 16px 40px;
+  font-weight: 700; letter-spacing: .14em;
+  touch-action: none; user-select: none;
+}
+#panel-impostor .mg-hold .holdbtn.down { background: var(--accent); color: #06111f; }
+#panel-impostor .mg-hold .holdbtn.good { background: var(--win); border-color: var(--win); color: #06111f; }
+
+#panel-impostor .mg-align .track {
+  position: relative; height: 52px; margin-bottom: 14px;
+  border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line);
+  touch-action: none; cursor: pointer;
+}
+#panel-impostor .mg-align .band {
+  position: absolute; top: 0; bottom: 0;
+  transform: translateX(-50%);
+  background: rgba(48, 164, 108, .22);
+  border-left: 1px solid rgba(48, 164, 108, .5);
+  border-right: 1px solid rgba(48, 164, 108, .5);
+}
+#panel-impostor .mg-align .marker {
+  position: absolute; top: 6px; bottom: 6px; width: 10px;
+  transform: translateX(-50%); border-radius: 3px;
+  background: var(--text);
+}
+#panel-impostor .mg-align .marker.locked { background: var(--win); }
+#panel-impostor .mg-align .marker.good { background: var(--win); box-shadow: 0 0 14px var(--win); }
+
+/* ---- meeting ---- */
+#panel-impostor .meeting { max-width: 480px; }
+#panel-impostor .mhead { display: flex; align-items: baseline; gap: 10px; }
+#panel-impostor .mhead h2 { margin: 0; flex: 1; font-size: 19px; }
+#panel-impostor .mtimer {
+  font: 700 17px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--accent);
+}
+#panel-impostor .msub { color: var(--muted); font-size: 13px; margin: 4px 0 16px; }
+
+#panel-impostor .vlist { display: flex; flex-direction: column; gap: 6px; }
+#panel-impostor .vrow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 11px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+#panel-impostor .vrow .chip { width: 16px; height: 16px; border-radius: 50%; flex: none; }
+#panel-impostor .vrow .nm { flex: 1; font-weight: 500; font-size: 14px; }
+#panel-impostor .vrow .mark { font-size: 11px; color: var(--muted); }
+#panel-impostor .vrow .tally {
+  font: 700 14px ui-monospace, SFMono-Regular, Menlo, monospace;
+  min-width: 18px; text-align: right; color: var(--accent);
+}
+#panel-impostor .vrow .votebtn { padding: 4px 12px; font-size: 12px; }
+#panel-impostor .vrow.dead { opacity: .42; }
+#panel-impostor .vrow.picked { border-color: var(--accent); }
+
+#panel-impostor .mfoot { margin-top: 14px; text-align: center; }
+#panel-impostor .mfoot .skipbtn { width: 100%; }
+#panel-impostor .verdict2 {
+  margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line);
+  text-align: center; font-size: 14px; font-weight: 500;
+}
+
+/* ---- game over ---- */
+#panel-impostor .over { text-align: center; max-width: 380px; }
+#panel-impostor .over h2 {
+  margin: 0 0 8px; font-size: 30px; font-weight: 800; letter-spacing: .14em;
+}
+#panel-impostor .over.crew h2 { color: var(--crew); }
+#panel-impostor .over.imposter h2 { color: var(--imp); }
+#panel-impostor .over .cause { font-size: 13px; color: var(--muted); }
+#panel-impostor .over .sub { font-size: 14px; margin: 12px 0 18px; }
+#panel-impostor .over .primary { width: 100%; }
+
+/* ---- side panel ----
+   Matches the other games' asides so the tab strip doesn't jump around when
+   you switch between them. */
+#panel-impostor aside {
+  flex: none; width: 270px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#panel-impostor .loghead {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--muted); margin-top: 8px;
+}
+#panel-impostor .taskpct {
+  margin-left: auto; letter-spacing: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* The one thing on the panel you should be able to read from across the room:
+   whether you are about to be thrown out of an airlock. */
+#panel-impostor .rolecard {
+  padding: 12px 14px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-left-width: 4px;
+}
+#panel-impostor .rolecard.crew { border-left-color: var(--crew); }
+#panel-impostor .rolecard.imposter { border-left-color: var(--imp); }
+#panel-impostor .rolecard.ghost { opacity: .72; }
+#panel-impostor .rolecard .role {
+  font-size: 15px; font-weight: 800; letter-spacing: .12em;
+}
+#panel-impostor .rolecard.crew .role { color: var(--crew); }
+#panel-impostor .rolecard.imposter .role { color: var(--imp); }
+#panel-impostor .rolecard .rolesub { font-size: 12px; color: var(--muted); margin-top: 3px; }
+
+#panel-impostor .taskbar {
+  height: 10px; border-radius: 999px; overflow: hidden;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+#panel-impostor .taskfill {
+  height: 100%; width: 0; background: var(--win);
+  transition: width .3s ease;
+}
+/* An impostor's bar still moves — it is the crew's, and watching it climb is
+   the only clock they are running against. Striped so it never reads as
+   progress they are making. */
+#panel-impostor .taskfill.fake {
+  background: repeating-linear-gradient(45deg,
+    rgba(47, 191, 107, .55) 0 6px, rgba(47, 191, 107, .25) 6px 12px);
+}
+
+#panel-impostor .tasklist { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+#panel-impostor .tasklist li {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 7px 10px; border-radius: 7px; margin-bottom: 5px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+#panel-impostor .tasklist .tk { flex: 1; }
+#panel-impostor .tasklist .rm { font-size: 11px; color: var(--muted); }
+#panel-impostor .tasklist li.done { opacity: .45; }
+#panel-impostor .tasklist li.done .tk { text-decoration: line-through; }
+
+#panel-impostor .keys { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+#panel-impostor .keys li {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin-bottom: 7px; color: var(--muted);
+}
+#panel-impostor kbd {
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 5px;
+  padding: 4px 6px; color: var(--text);
+}
+
+#panel-impostor .logwrap { max-height: 170px; overflow-y: auto; }
+#panel-impostor .log { list-style: none; margin: 0; padding: 0; font-size: 12px; }
+#panel-impostor .log li {
+  padding: 5px 0; color: var(--muted);
+  border-bottom: 1px solid var(--line);
+}
+#panel-impostor .log li:last-child { border-bottom: none; color: var(--text); }
+
+/* ---- narrow ----
+   The aside goes under the ship rather than away: on a phone it is the only
+   place your task list is written down. */
+@media (max-width: 900px) {
+  #panel-impostor .table { flex-direction: column; overflow-y: auto; }
+  #panel-impostor .stage { flex: none; padding: 8px; }
+  #panel-impostor .screen { width: 100%; }
+  #panel-impostor aside {
+    width: auto; border-left: none; border-top: 1px solid var(--line);
+    overflow: visible;
+  }
+}

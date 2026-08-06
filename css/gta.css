@@ -1,0 +1,202 @@
+/* GTA: Dublin — the 3D viewport and the HUD floated over it.
+   Scoped to #panel-gta. Lobby and waiting-room furniture comes from app.css. */
+
+/* NB: never set `display` on #panel-gta — see the note in meridian.css. */
+
+#panel-gta .city { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+#panel-gta .viewport {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #a9bac9;
+}
+
+#panel-gta .gl {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+#panel-gta .loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: #1d2733;
+  background: #a9bac9;
+}
+#panel-gta .loading[hidden] { display: none; }
+
+/* ---- HUD ----
+   Everything sits over the canvas; nothing takes the pointer except the
+   scoreboard, and even that is read-only. */
+
+#panel-gta .hud { position: absolute; inset: 0; pointer-events: none; }
+
+#panel-gta .minimap {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(10, 14, 20, 0.5);
+  background: #272b31;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+  opacity: 0.94;
+}
+
+#panel-gta .status {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+#panel-gta .money {
+  font: 700 22px ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #b8f2c9;
+}
+#panel-gta .stars { font-size: 19px; letter-spacing: 2px; color: rgba(20, 26, 34, 0.45); }
+#panel-gta .stars .lit { color: #ffc53d; }
+#panel-gta .hpbar {
+  width: 150px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(10, 14, 20, 0.55);
+  overflow: hidden;
+}
+#panel-gta .hpfill {
+  height: 100%;
+  width: 100%;
+  border-radius: 999px;
+  background: #30a46c;
+  transition: width 0.2s;
+}
+
+#panel-gta .missionbox {
+  position: absolute;
+  top: 86px;
+  right: 14px;
+  min-width: 180px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(13, 19, 32, 0.82);
+  border: 1px solid rgba(255, 197, 61, 0.5);
+  backdrop-filter: blur(3px);
+  text-align: right;
+}
+#panel-gta .missionbox[hidden] { display: none; }
+#panel-gta .mname { font-weight: 700; font-size: 13px; color: #ffe6a8; }
+#panel-gta .mline { font-size: 12px; color: #e7ecf5; margin-top: 2px; }
+#panel-gta .mtime { font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; color: #ffc53d; margin-top: 2px; }
+
+#panel-gta .feed {
+  position: absolute;
+  left: 12px;
+  bottom: 44px;
+  max-width: 330px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  color: rgba(231, 236, 245, 0.9);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+#panel-gta .prompts {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 14px;
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+#panel-gta .prompt {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  background: rgba(13, 19, 32, 0.86);
+  border: 1px solid var(--line);
+  backdrop-filter: blur(3px);
+}
+#panel-gta .prompt kbd {
+  font: 700 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  padding: 4px 6px;
+}
+#panel-gta .prompt.danger { border-color: rgba(229, 72, 77, 0.6); color: #ffc4c4; }
+#panel-gta .prompt.go { border-color: rgba(255, 197, 61, 0.5); color: #ffe6a8; }
+
+#panel-gta .keysheet {
+  position: absolute;
+  right: 14px;
+  bottom: 12px;
+  font-size: 11px;
+  color: rgba(231, 236, 245, 0.65);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7);
+}
+
+/* The one line you must not miss. */
+#panel-gta .wasted {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(10, 6, 8, 0.55);
+}
+#panel-gta .wasted[hidden] { display: none; }
+#panel-gta .wasted .big {
+  font: 900 64px ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 8px;
+  color: #e5484d;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, 0.8);
+}
+#panel-gta .wasted .sub { font-size: 14px; color: rgba(231, 236, 245, 0.85); }
+
+#panel-gta .scores {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 300px;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: rgba(13, 19, 32, 0.92);
+  border: 1px solid var(--line);
+  pointer-events: auto;
+}
+#panel-gta .scores[hidden] { display: none; }
+#panel-gta .shead { font-weight: 700; font-size: 14px; margin-bottom: 8px; }
+#panel-gta .srow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 0;
+  font-size: 13px;
+}
+#panel-gta .srow .chip { width: 13px; height: 13px; border-radius: 50%; flex: none; }
+#panel-gta .srow .nm { flex: 1; font-weight: 500; }
+#panel-gta .srow .cash { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; color: #b8f2c9; }
+#panel-gta .srow .kd { width: 44px; text-align: right; color: var(--muted); font-size: 12px; }

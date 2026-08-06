@@ -36,10 +36,11 @@ import xo from './games/xo/index.js';
 import snake from './games/snake/index.js';
 import flappy from './games/flappy/index.js';
 import impostor from './games/impostor/index.js';
+import bros from './games/bros/index.js';
 import flashcards from './study/flashcards/index.js';
 
 const SECTIONS = [
-  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, snake, flappy, impostor] },
+  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, snake, flappy, impostor, bros] },
   { id: 'study', label: 'Study', modules: [flashcards] },
 ];
 

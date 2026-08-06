@@ -1,0 +1,188 @@
+/* Meridian Bros — playfield, wait-room character select, side panel.
+   Scoped to #panel-bros. Tokens from css/app.css; the lobby and waiting-room
+   furniture (.lobby, .lobby-card, .code-display, .seats) comes from app.css
+   too — only what this game adds on top lives here. */
+
+/* NB: never set `display` on #panel-bros — see the note in meridian.css. */
+
+/* The character grid needs more elbow room than the stock 380px card. */
+#panel-bros .lobby-card.wide { max-width: 620px; }
+
+#panel-bros .subhead {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--muted); margin: 16px 0 8px;
+}
+
+/* ---- character select ---- */
+#panel-bros .chargrid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+}
+#panel-bros .charcard {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 12px 6px 8px; width: auto;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+  font-size: 12px;
+}
+#panel-bros .charcard:hover:not(:disabled) { border-color: var(--c); }
+#panel-bros .charcard.mine { border-color: var(--c); box-shadow: 0 0 0 1px var(--c); }
+#panel-bros .charcard.taken:not(.mine) { opacity: .5; }
+
+/* The hero as a swatch: a face-coloured dot wearing its cap colour. */
+#panel-bros .charcard .dot {
+  position: relative; width: 34px; height: 34px; border-radius: 50%;
+  background: #ffd9b0; overflow: hidden; flex: none;
+}
+#panel-bros .charcard .dot .cap {
+  position: absolute; inset: 0 0 55% 0;
+  background: var(--c); border-bottom: 2px solid var(--cd);
+}
+#panel-bros .charcard .cname { font-weight: 700; color: var(--text); }
+#panel-bros .charcard .cblurb { color: var(--muted); font-size: 10.5px; line-height: 1.25; }
+#panel-bros .charcard .cby { font-size: 10px; color: var(--accent); min-height: 13px; }
+
+/* ---- world picker ---- */
+#panel-bros .worldrow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+#panel-bros .worldbtn {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 9px 4px; width: auto; font-size: 11.5px; color: var(--muted);
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
+}
+#panel-bros .worldbtn .sw {
+  width: 100%; height: 26px; border-radius: 6px;
+  background: linear-gradient(var(--s0) 0%, var(--s1) 72%, var(--g) 72%);
+}
+#panel-bros .worldbtn.picked { color: var(--text); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+#panel-bros .worldbtn:disabled { cursor: default; opacity: .8; }
+#panel-bros .worldbtn:disabled:not(.picked) { opacity: .45; }
+
+/* ---- table layout: playfield + aside, like the other games ---- */
+#panel-bros .table { flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+#panel-bros .stage {
+  flex: 1; min-width: 0; display: flex;
+  align-items: center; justify-content: center;
+  padding: 20px; overflow: auto;
+  background: radial-gradient(ellipse at 50% 35%, #1a2336 0%, #131a29 60%, #0e1420 100%);
+}
+
+/* Drawn at 960x544 and scaled to fit. Width-led: the game is wide, so the
+   width is what runs out first on a normal window; `aspect-ratio` derives the
+   height, and the cap keeps it from towering on a narrow-but-tall window. */
+#panel-bros .screen {
+  position: relative;
+  width: min(100%, 1060px, 168vh);
+  aspect-ratio: 960 / 544;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
+}
+
+#panel-bros .board {
+  display: block; width: 100%; height: 100%;
+  touch-action: none;
+  user-select: none;
+}
+
+/* ---- transient banner ("Checkpoint!", "Ouch!") ---- */
+#panel-bros .banner {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+  padding: 7px 16px; border-radius: 999px;
+  background: rgba(10, 14, 24, .78); color: #fff;
+  font-weight: 700; font-size: 14px; letter-spacing: .04em;
+  pointer-events: none;
+}
+#panel-bros .banner[hidden] { display: none; }
+
+/* ---- course-clear modal ---- */
+#panel-bros .modal {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 9, 16, .55);
+}
+#panel-bros .modal[hidden] { display: none; }
+
+#panel-bros .card2 {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 22px 26px; max-width: 420px; width: calc(100% - 40px);
+  text-align: center;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, .5);
+}
+#panel-bros .card2 h2 {
+  margin: 0 0 6px; font-size: 26px; letter-spacing: .12em; font-weight: 800;
+  color: var(--win);
+}
+#panel-bros .card2 .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
+
+#panel-bros .ctable { margin-bottom: 16px; }
+#panel-bros .crow {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: 8px; margin-bottom: 5px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 13px;
+}
+#panel-bros .crow .nm { flex: 1; text-align: left; font-weight: 600; }
+#panel-bros .crow .n { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+
+#panel-bros .btnrow { display: flex; gap: 8px; justify-content: center; }
+
+#panel-bros .chip {
+  width: 16px; height: 16px; border-radius: 50%; flex: none;
+  border: 1px solid rgba(0, 0, 0, .3);
+}
+
+/* ---- side panel, matching the other games' asides ---- */
+#panel-bros aside {
+  flex: none; width: 260px;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 8px;
+}
+#panel-bros .loghead {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .09em;
+  color: var(--muted); margin-top: 8px;
+}
+#panel-bros .loghead:first-child { margin-top: 0; }
+
+#panel-bros .keys { list-style: none; margin: 0; padding: 0; font-size: 13px; }
+#panel-bros .keys li {
+  display: flex; align-items: center; gap: 5px; flex-wrap: wrap;
+  margin-bottom: 7px; color: var(--muted);
+}
+#panel-bros kbd {
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-bottom-width: 2px; border-radius: 5px;
+  padding: 4px 6px; color: var(--text);
+}
+
+#panel-bros .blurb { font-size: 12px; color: var(--muted); }
+
+#panel-bros .worldinfo {
+  padding: 10px 12px; border-radius: 8px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+#panel-bros .wtitle { font-weight: 700; font-size: 14px; }
+#panel-bros .wsub { font-size: 12px; color: var(--muted); }
+
+#panel-bros .party { list-style: none; margin: 0; padding: 0; }
+#panel-bros .party li {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 10px; border-radius: 8px; margin-bottom: 6px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  font-size: 13px;
+}
+#panel-bros .party .nm { flex: 1; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+#panel-bros .party .sc { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+#panel-bros .party li.gone { opacity: .5; }
+
+/* ---- narrow ---- */
+@media (max-width: 820px) {
+  #panel-bros .table { flex-direction: column; overflow-y: auto; }
+  #panel-bros .stage { flex: none; padding: 10px; }
+  #panel-bros aside {
+    width: auto; border-left: none; border-top: 1px solid var(--line);
+    overflow: visible;
+  }
+  #panel-bros .chargrid, #panel-bros .worldrow { grid-template-columns: repeat(2, 1fr); }
+}

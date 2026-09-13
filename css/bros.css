@@ -40,20 +40,49 @@
 #panel-bros .charcard .cblurb { color: var(--muted); font-size: 10.5px; line-height: 1.25; }
 #panel-bros .charcard .cby { font-size: 10px; color: var(--accent); min-height: 13px; }
 
-/* ---- world picker ---- */
-#panel-bros .worldrow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-#panel-bros .worldbtn {
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  padding: 9px 4px; width: auto; font-size: 11.5px; color: var(--muted);
+/* ---- the campaign map ----
+   Eight nodes on a path, two rows of four. A node shows its sky and ground
+   as a swatch, its number, and either what the crew did there or a lock. */
+#panel-bros .campaign { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+#panel-bros .wnode {
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 8px 4px 7px; width: auto; font-size: 11.5px; color: var(--muted);
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;
 }
-#panel-bros .worldbtn .sw {
-  width: 100%; height: 26px; border-radius: 6px;
-  background: linear-gradient(var(--s0) 0%, var(--s1) 72%, var(--g) 72%);
+#panel-bros .wnode .sw {
+  position: relative; width: 100%; height: 30px; border-radius: 6px;
+  background: linear-gradient(var(--s0) 0%, var(--s1) 70%, var(--g) 70%);
+  display: flex; align-items: center; justify-content: center;
 }
-#panel-bros .worldbtn.picked { color: var(--text); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-#panel-bros .worldbtn:disabled { cursor: default; opacity: .8; }
-#panel-bros .worldbtn:disabled:not(.picked) { opacity: .45; }
+#panel-bros .wnode .wnum {
+  font-weight: 800; font-size: 13px; color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .6);
+  background: rgba(0, 0, 0, .35); border-radius: 50%; width: 20px; height: 20px;
+  display: flex; align-items: center; justify-content: center;
+}
+#panel-bros .wnode .wname { color: var(--text); font-weight: 600; line-height: 1.2; text-align: center; }
+#panel-bros .wnode .wmeta { font-size: 10px; color: var(--muted); white-space: nowrap; }
+#panel-bros .wnode.cleared .wmeta { color: var(--win); }
+#panel-bros .wnode.picked { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+#panel-bros .wnode:disabled { cursor: default; }
+#panel-bros .wnode:disabled:not(.picked) { opacity: .7; }
+#panel-bros .wnode.locked { opacity: .4; }
+#panel-bros .wnode.locked .sw { filter: grayscale(1); }
+#panel-bros .wnode.locked .wnum::before { content: "🔒"; font-size: 10px; }
+#panel-bros .wnode.locked .wnum { font-size: 0; }
+
+#panel-bros .maprow {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin-top: 8px; font-size: 12px; color: var(--muted); flex-wrap: wrap;
+}
+#panel-bros .modetoggle { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+#panel-bros .modetoggle input { accent-color: var(--accent); }
+#panel-bros .linkbtn {
+  background: none; border: none; padding: 0; font-size: 12px; color: var(--accent);
+  text-decoration: underline; cursor: pointer; width: auto;
+}
+#panel-bros .linkbtn[hidden] { display: none; }
 
 /* ---- table layout: playfield + aside, like the other games ---- */
 #panel-bros .table { flex: 1; display: flex; min-height: 0; min-width: 0; }
@@ -191,5 +220,5 @@
     width: auto; border-left: none; border-top: 1px solid var(--line);
     overflow: visible;
   }
-  #panel-bros .chargrid, #panel-bros .worldrow { grid-template-columns: repeat(2, 1fr); }
+  #panel-bros .chargrid, #panel-bros .campaign { grid-template-columns: repeat(2, 1fr); }
 }

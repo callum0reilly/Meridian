@@ -496,12 +496,16 @@ export const ENEMY = {
   spiker: { w: 26, h: 20, speed: 0.55, stomp: false },
   flyer:  { w: 26, h: 18, speed: 1.0,  stomp: true, range: TILE * 4, bob: 18 },
   hopper: { w: 24, h: 24, speed: 0.7,  stomp: true, hopEvery: 80, hop: -7.5 },
+  boss:   { w: 46, h: 42, speed: 1.1,  stomp: true, hp: 3, hopEvery: 120, hop: -8, stun: 70, rage: 0.5 },
 };
+
+export const BOSS_BOUNCE = -11;
 
 export function makeEnemies(lv) {
   return lv.enemies.map((e, i) => ({
     i, type: e.type, x: e.x, y: e.y, dir: -1, vy: 0, alive: true,
     baseY: e.y, x0: e.x - (ENEMY[e.type].range || 0), x1: e.x + (ENEMY[e.type].range || 0),
+    hp: ENEMY[e.type].hp || 1, hurtT: 0,
   }));
 }
 
@@ -520,6 +524,11 @@ export function stepEnemy(e, lv, step = 0) {
     e.x += spec.speed * e.dir;
     return;
   }
+
+  // Stunned: reeling on the spot, then back at it — faster for every hit taken.
+  if (e.hurtT > 0) e.hurtT -= 1;
+  const stunned = e.hurtT > 0;
+  const speed = spec.speed + (spec.rage ? spec.rage * ((spec.hp || 1) - e.hp) : 0);
 
   e.vy = Math.min(e.vy + GRAVITY, MAX_FALL);
   e.y += e.vy;
@@ -542,13 +551,13 @@ export function stepEnemy(e, lv, step = 0) {
       || hazardAt(lv, atx, mty) || hazardAt(lv, atx, bty)
       || !(solidAt(lv, atx, bty) || oneWayAt(lv, atx, bty));
     if (blocked) e.dir = -e.dir;
-    e.x += spec.speed * e.dir;
+    if (!stunned) e.x += speed * e.dir;
     if (e.x < hw) { e.x = hw; e.dir = 1; }
     if (e.x > lv.w * TILE - hw) { e.x = lv.w * TILE - hw; e.dir = -1; }
 
     // Hoppers leap straight up on a beat, staggered by index so a row of them
     // doesn't move as one.
-    if (spec.hopEvery && (step + e.i * 17) % spec.hopEvery === 0) e.vy = spec.hop;
+    if (!stunned && spec.hopEvery && (step + e.i * 17) % spec.hopEvery === 0) e.vy = spec.hop;
   }
 
   if (e.y > (lv.h + 3) * TILE) e.alive = false;   // fell out somehow; tidy up
@@ -568,6 +577,7 @@ export function hitEnemy(b, e) {
   const inX = Math.abs(b.x - e.x) < (PLAYER_W + spec.w) / 2 - 4;
   const inY = Math.abs(b.y - e.y) < (PLAYER_H + spec.h) / 2 - 3;
   if (!inX || !inY) return null;
+  if (e.hurtT > 0) return null;                  // reeling: harmless, and not stompable again yet
   if (spec.stomp && b.vy > 0.5 && b.y + PLAYER_H / 2 < e.y + spec.h * 0.3) return 'stomp';
   return b.inv > 0 ? null : 'hurt';
 }
@@ -575,12 +585,14 @@ export function hitEnemy(b, e) {
 /* ========================= the shared run (host) ========================= */
 
 /** Everything one attempt at one world accumulates. Lives on the host;
- *  clients see it through room pushes. */
-export function createRun(worldId, seatCount) {
+ *  clients see it through room pushes. In a race there are no shared lives —
+ *  deaths just cost time. */
+export function createRun(worldId, seatCount, { race = false } = {}) {
   const world = WORLD_BY_ID.get(worldId) || WORLDS[0];
   const lv = parseWorld(world);
   return {
     worldId: world.id,
+    race,
     lv,
     enemies: makeEnemies(lv),
     collected: new Set(),        // coin indexes
@@ -591,11 +603,13 @@ export function createRun(worldId, seatCount) {
     cracked: lv.cracked,         // "tx,ty" of bricks hit once — shared with lv
     broken: lv.broken,           //   … and twice, so collision sees it too
     scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0, g: 0 })),
-    lives: world.lives ?? DEFAULT_LIVES,
+    lives: race ? null : (world.lives ?? DEFAULT_LIVES),
     coinsTotal: 0,
     steps: 0,                    // the shared clock, advanced by the host's sim
     clearBy: -1,                 // seat that reached the flag, once someone has
+    clearSteps: 0,               // the clock when they did
     over: false,                 // the team ran out of lives
+    bossDown: false,
   };
 }
 
@@ -663,11 +677,18 @@ export function applyPickup(run, seat, i) {
   return true;
 }
 
+/** A stomp kills most things outright. A boss takes it as one hit, reels for
+ *  a while (during which further stomps don't count), and opens the doors
+ *  when it finally goes down. */
 export function applyStomp(run, seat, i) {
   const e = run.enemies[i];
-  if (!e || !e.alive || !ENEMY[e.type].stomp) return false;
-  e.alive = false;
+  const spec = e && ENEMY[e.type];
+  if (!e || !e.alive || !spec.stomp || e.hurtT > 0) return false;
+  e.hp -= 1;
   score(run, seat).s += 1;
+  if (e.hp > 0) { e.hurtT = spec.stun; return true; }
+  e.alive = false;
+  if (e.type === 'boss') { run.lv.unlocked = true; run.bossDown = true; }
   return true;
 }
 
@@ -685,6 +706,7 @@ export function applyDeath(run, seat) {
 export function applyFlag(run, seat) {
   if (run.clearBy >= 0 || run.over) return false;
   run.clearBy = seat;
+  run.clearSteps = run.steps;
   return true;
 }
 
@@ -697,3 +719,31 @@ export function nextWorldId(worldId) {
   const i = WORLDS.findIndex((w) => w.id === worldId);
   return WORLDS[(i + 1) % WORLDS.length].id;
 }
+
+/* ============================ the campaign ============================ */
+
+/** Which worlds are open: the first, everything after a cleared one, and
+ *  everything if the player has asked for the lot. */
+export function unlockedWorlds(progress) {
+  if (progress?.all) return new Set(WORLDS.map((w) => w.id));
+  const open = new Set([WORLDS[0].id]);
+  for (let i = 0; i < WORLDS.length - 1; i++) {
+    if (progress?.cleared?.[WORLDS[i].id]) open.add(WORLDS[i + 1].id);
+  }
+  return open;
+}
+
+/** Fold a finished run into the record: gems are a high-water mark, the
+ *  time a best. */
+export function recordClear(progress, run) {
+  const next = { all: !!progress?.all, cleared: { ...(progress?.cleared || {}) } };
+  const was = next.cleared[run.worldId] || { gems: 0, best: null };
+  const secs = Math.round(run.clearSteps / 60);
+  next.cleared[run.worldId] = {
+    gems: Math.max(was.gems, run.gems.size),
+    best: was.best === null || secs < was.best ? secs : was.best,
+  };
+  return next;
+}
+
+export const fmtTime = (secs) => `${Math.floor(secs / 60)}:${String(Math.floor(secs % 60)).padStart(2, '0')}`;

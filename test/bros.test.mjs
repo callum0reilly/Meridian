@@ -12,7 +12,7 @@ import {
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
   nextWorldId, moverPos, windAt, laserPhase, LASER_PERIOD, LASER_ON,
-  applyKey,
+  applyKey, unlockedWorlds, recordClear, fmtTime,
 } from '../js/games/bros/rules.js';
 import { solidAt, hazardAt } from '../js/games/bros/levels.js';
 
@@ -717,6 +717,76 @@ test('hoppers walk like walkers and leap on a beat', () => {
   const local = parseWorld(ruinsWorld());
   assert.equal(local.enemies.find((x) => x.type === 'hopper').x, 20 * TILE + TILE / 2, 'J parses as a hopper');
   void lv;
+});
+
+/* ---------------- the boss, the race, the campaign ---------------- */
+
+test('the boss takes three stomps, reels between them, and opens the gate', () => {
+  const run = createRun('reactor', 2);
+  const boss = run.enemies.find((e) => e.type === 'boss');
+  assert.ok(boss, 'the reactor has a boss');
+  assert.equal(boss.hp, ENEMY.boss.hp);
+  const doorTy = run.lv.grid.findIndex((r) => r.includes('D'));
+  const doorTx = run.lv.grid[doorTy].indexOf('D');
+  assert.equal(solidAt(run.lv, doorTx, doorTy), true, 'the gate is shut');
+
+  const stomper = { x: boss.x, y: boss.y - 30, vx: 0, vy: 4, dead: false, inv: 0 };
+  assert.equal(hitEnemy(stomper, boss), 'stomp');
+  assert.equal(applyStomp(run, 0, boss.i), true);
+  assert.equal(boss.hp, 2);
+  assert.equal(boss.alive, true, 'still standing');
+  assert.ok(boss.hurtT > 0, 'reeling');
+  assert.equal(hitEnemy(stomper, boss), null, 'reeling: no second stomp yet, and harmless to touch');
+  assert.equal(applyStomp(run, 1, boss.i), false, 'the referee agrees');
+
+  const x0 = boss.x;
+  for (let s = 1; s <= ENEMY.boss.stun; s++) stepEnemy(boss, run.lv, s);
+  assert.ok(Math.abs(boss.x - x0) < 2, 'did not move while stunned (bar the step the stun wore off)');
+  assert.equal(boss.hurtT, 0);
+  for (let s = 1; s <= 60; s++) stepEnemy(boss, run.lv, s);
+  assert.ok(Math.abs(boss.x - x0) > 30, 'back on the move, and faster');
+
+  assert.equal(applyStomp(run, 0, boss.i), true);
+  boss.hurtT = 0;
+  assert.equal(applyStomp(run, 1, boss.i), true);
+  assert.equal(boss.alive, false, 'down');
+  assert.equal(run.bossDown, true);
+  assert.equal(run.lv.unlocked, true);
+  assert.equal(solidAt(run.lv, doorTx, doorTy), false, 'and the gate is open');
+  assert.equal(run.scores[0].s + run.scores[1].s, 3, 'every hit scored');
+});
+
+test('a race has no shared lives, and records who was first', () => {
+  const run = createRun('meadow', 3, { race: true });
+  assert.equal(run.lives, null);
+  for (let i = 0; i < 20; i++) applyDeath(run, i % 3);
+  assert.equal(run.over, false, 'deaths never end a race');
+  run.steps = 61 * 60;
+  assert.equal(applyFlag(run, 2), true);
+  assert.equal(run.clearBy, 2);
+  assert.equal(run.clearSteps, 61 * 60);
+  assert.equal(fmtTime(run.clearSteps / 60), '1:01');
+});
+
+test('clearing a world unlocks the next; the record keeps best gems and time', () => {
+  let progress = { all: false, cleared: {} };
+  assert.deepEqual([...unlockedWorlds(progress)], [WORLDS[0].id], 'only the first world at the start');
+
+  const run = createRun(WORLDS[0].id, 1);
+  run.gems.add(0); run.gems.add(1);
+  run.steps = 90 * 60; applyFlag(run, 0);
+  progress = recordClear(progress, run);
+  assert.deepEqual(progress.cleared[WORLDS[0].id], { gems: 2, best: 90 });
+  assert.ok(unlockedWorlds(progress).has(WORLDS[1].id), 'the second world opens');
+  assert.ok(!unlockedWorlds(progress).has(WORLDS[2].id), 'but not the third');
+
+  const again = createRun(WORLDS[0].id, 1);
+  again.gems.add(2);
+  again.steps = 120 * 60; applyFlag(again, 0);
+  progress = recordClear(progress, again);
+  assert.deepEqual(progress.cleared[WORLDS[0].id], { gems: 2, best: 90 }, 'a slower run with fewer gems changes nothing');
+
+  assert.equal(unlockedWorlds({ all: true, cleared: {} }).size, WORLDS.length, '"unlock everything" opens the lot');
 });
 
 test('the world tour advances and wraps', () => {

@@ -34,7 +34,7 @@ import {
   collectCoins, collectGems, collectPickups, collectKeys, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyKey, applyStomp, applyDeath, applyFlag,
-  nextWorldId,
+  nextWorldId, unlockedWorlds, recordClear, fmtTime, BOSS_BOUNCE,
 } from './rules.js';
 import { sfx, unlock as unlockAudio, isMuted, setMuted } from './sfx.js';
 
@@ -97,7 +97,11 @@ const WAIT_HTML = `
       <div class="chargrid"></div>
 
       <div class="subhead">World</div>
-      <div class="worldrow"></div>
+      <div class="campaign"></div>
+      <div class="maprow">
+        <label class="modetoggle"><input type="checkbox" class="racemode"> Race — first to the flag wins, no shared lives</label>
+        <button class="linkbtn unlockall">Unlock everything</button>
+      </div>
 
       <div class="subhead">Party</div>
       <ul class="seats"></ul>
@@ -140,6 +144,19 @@ const GAME_HTML = `
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (ch) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+/* ---- the campaign record ----
+   Kept in the host's browser: which worlds their crew has cleared, with the
+   most gems and the best time. Rooms are ephemeral, so this is what turns
+   eight worlds into something you come back to. */
+const PROGRESS_KEY = 'bros.progress';
+function loadProgress() {
+  try { return JSON.parse(localStorage.getItem(PROGRESS_KEY)) || { all: false, cleared: {} }; }
+  catch { return { all: false, cleared: {} }; }
+}
+function saveProgress(p) {
+  try { localStorage.setItem(PROGRESS_KEY, JSON.stringify(p)); } catch { /* private mode */ }
+}
 
 function init(root, header) {
   let room = null;         // net.js Room
@@ -248,6 +265,8 @@ function init(root, header) {
           code: room.code,
           hostId: selfId,
           world: WORLDS[0].id,
+          mode: 'coop',
+          progress: loadProgress(),
           seats: [{ id: selfId, name: myName, char: null, connected: true }],
           run: null,
         };
@@ -347,7 +366,23 @@ function init(root, header) {
 
     if (msg.t === 'world') {
       if (fromId !== state.hostId || state.phase !== 'wait' || !WORLD_BY_ID.has(msg.w)) return;
+      if (!unlockedWorlds(state.progress).has(msg.w)) return;
       state.world = msg.w;
+      pushRoom();
+      return;
+    }
+
+    if (msg.t === 'mode') {
+      if (fromId !== state.hostId || state.phase !== 'wait') return;
+      state.mode = msg.m === 'race' ? 'race' : 'coop';
+      pushRoom();
+      return;
+    }
+
+    if (msg.t === 'unlockall') {
+      if (fromId !== state.hostId || state.phase !== 'wait') return;
+      state.progress = { ...state.progress, all: true };
+      saveProgress(state.progress);
       pushRoom();
       return;
     }
@@ -400,6 +435,8 @@ function init(root, header) {
       if (applyFlag(run, seat)) {
         state.phase = 'clear';
         stopSim();
+        state.progress = recordClear(state.progress, run);
+        saveProgress(state.progress);
         pushRoom();
       }
     }
@@ -407,7 +444,7 @@ function init(root, header) {
 
   function beginRun(worldId) {
     state.world = worldId;
-    state.run = createRun(worldId, state.seats.length);
+    state.run = createRun(worldId, state.seats.length, { race: state.mode === 'race' });
     state.phase = 'play';
     poses.clear();
     startSim();
@@ -423,9 +460,12 @@ function init(root, header) {
       code: state.code,
       hostId: state.hostId,
       world: state.world,
+      mode: state.mode,
+      progress: state.progress,
       seats: state.seats.map((s) => ({ id: s.id, name: s.name, char: s.char, connected: s.connected })),
       run: run ? {
         worldId: run.worldId,
+        race: run.race,
         scores: run.scores,
         collected: [...run.collected],
         gems: [...run.gems],
@@ -437,8 +477,10 @@ function init(root, header) {
         unlocked: run.lv.unlocked,
         deadEnemies: run.enemies.filter((e) => !e.alive).map((e) => e.i),
         clearBy: run.clearBy,
+        clearSteps: run.clearSteps,
         lives: run.lives,
         over: run.over,
+        bossDown: run.bossDown,
       } : null,
     };
   }
@@ -459,7 +501,7 @@ function init(root, header) {
       k: state.run.steps,
       p: [...poses.entries()].map(([seat, p]) => [seat, ...p]),
       e: state.run.enemies.filter((e) => e.alive)
-        .map((e) => [e.i, Math.round(e.x), Math.round(e.y), e.dir]),
+        .map((e) => [e.i, Math.round(e.x), Math.round(e.y), e.dir, e.hp, e.hurtT]),
     };
     room.broadcast(snap);
     applySnapshot(snap);
@@ -544,7 +586,7 @@ function init(root, header) {
       }
       if (view.run.unlocked && !lv.unlocked) {
         lv.unlocked = true;
-        say('The gate opens!');
+        say(view.run.bossDown ? 'Boss down! The gate opens!' : 'The gate opens!');
         sfx.unlock();
         shake = 5;
       }
@@ -625,17 +667,19 @@ function init(root, header) {
     for (const st of [...ents.keys()]) if (st !== seat && !seen.has(st)) ents.delete(st);
 
     const alive = new Set();
-    for (const [i, x, y, dir] of s.e) {
+    for (const [i, x, y, dir, hp, hurtT] of s.e) {
       alive.add(i);
       const f = foes.get(i);
       if (!f) {
-        foes.set(i, { i, x, y, fx: x, fy: y, tx: x, ty: y, t0: now, dir, type: lv.enemies[i]?.type || 'walker' });
+        foes.set(i, { i, x, y, fx: x, fy: y, tx: x, ty: y, t0: now, dir, hp, hurtT, type: lv.enemies[i]?.type || 'walker' });
         continue;
       }
       f.fx = f.x; f.fy = f.y;
       f.tx = x; f.ty = y;
       f.t0 = now;
       f.dir = dir;
+      f.hp = hp;
+      f.hurtT = hurtT;
     }
     for (const [i, f] of [...foes.entries()]) {
       if (!alive.has(i)) { addFx('squash', f.x, f.y); foes.delete(i); }
@@ -763,12 +807,25 @@ function init(root, header) {
       // Enemies live where the host last said they were — a whisker behind
       // the truth, which for a co-op game is close enough to land on.
       for (const f of foes.values()) {
-        const verdict = hitEnemy(body, { type: f.type, x: f.x, y: f.y, alive: true });
+        const verdict = hitEnemy(body, { type: f.type, x: f.x, y: f.y, alive: true, hurtT: f.hurtT || 0 });
         if (verdict === 'stomp') {
-          body.vy = STOMP_BOUNCE;
-          addFx('squash', f.x, f.y);
-          foes.delete(f.i);
-          sfx.stomp();
+          if (f.type === 'boss' && f.hp > 1) {
+            // Not dead yet: bounce high, and assume the host agrees it's reeling.
+            body.vy = BOSS_BOUNCE;
+            f.hurtT = ENEMY.boss.stun;
+            f.hp -= 1;
+            addFx('squash', f.x, f.y + 10);
+            sfx.stomp();
+            sfx.hurt();
+            shake = 8;
+            say(f.hp === 1 ? 'One more hit!' : 'Hit it again!');
+          } else {
+            body.vy = f.type === 'boss' ? BOSS_BOUNCE : STOMP_BOUNCE;
+            addFx('squash', f.x, f.y);
+            foes.delete(f.i);
+            sfx.stomp();
+            if (f.type === 'boss') shake = 12;
+          }
           intent({ t: 'stomp', i: f.i });
         } else if (verdict === 'hurt') {
           const res = hurt(body);
@@ -1313,6 +1370,71 @@ function init(root, header) {
   function drawEnemy(f, x, y, ts) {
     const spec = ENEMY[f.type];
     const wob = Math.sin(ts / 120 + f.i) * 1.5;
+    if (f.type === 'boss') {
+      const hw = spec.w / 2, hh = spec.h / 2;
+      const reeling = f.hurtT > 0;
+      const flash = reeling && Math.floor(ts / 70) % 2 === 0;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + hh + 3, hw, 5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // horns
+      ctx.fillStyle = flash ? '#fff' : '#f2d16b';
+      ctx.beginPath();
+      ctx.moveTo(x - hw + 6, y - hh + 6); ctx.lineTo(x - hw - 2, y - hh - 14); ctx.lineTo(x - hw + 16, y - hh + 2);
+      ctx.moveTo(x + hw - 6, y - hh + 6); ctx.lineTo(x + hw + 2, y - hh - 14); ctx.lineTo(x + hw - 16, y - hh + 2);
+      ctx.closePath();
+      ctx.fill();
+      // body
+      ctx.fillStyle = flash ? '#fff' : reeling ? '#c9573f' : '#9c2a2a';
+      ctx.beginPath();
+      ctx.ellipse(x, y + wob * 0.3, hw, hh, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = flash ? '#eee' : '#6b1a1a';
+      ctx.beginPath();
+      ctx.ellipse(x, y + hh * 0.45, hw * 0.7, hh * 0.35, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // feet
+      ctx.fillStyle = flash ? '#ddd' : '#4a1212';
+      ctx.beginPath();
+      ctx.ellipse(x - hw / 2, y + hh - 2, 9, 6, 0, 0, Math.PI * 2);
+      ctx.ellipse(x + hw / 2, y + hh - 2, 9, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // eyes: angry, or spinning when reeling
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x - 8 + f.dir * 3, y - 8, 6, 0, Math.PI * 2);
+      ctx.arc(x + 8 + f.dir * 3, y - 8, 6, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#222';
+      if (reeling) {
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('×', x - 8 + f.dir * 3, y - 8);
+        ctx.fillText('×', x + 8 + f.dir * 3, y - 8);
+      } else {
+        ctx.beginPath();
+        ctx.arc(x - 8 + f.dir * 5, y - 7, 2.8, 0, Math.PI * 2);
+        ctx.arc(x + 8 + f.dir * 5, y - 7, 2.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(x - 15, y - 17); ctx.lineTo(x - 3, y - 12);
+        ctx.moveTo(x + 15, y - 17); ctx.lineTo(x + 3, y - 12);
+        ctx.stroke();
+      }
+      // hearts above
+      for (let i = 0; i < spec.hp; i++) {
+        ctx.fillStyle = i < f.hp ? '#ff3b6b' : 'rgba(0,0,0,0.35)';
+        ctx.font = 'bold 13px ui-sans-serif, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('♥', x - 14 + i * 14, y - hh - 24);
+      }
+      return;
+    }
     if (f.type === 'walker') {
       ctx.fillStyle = 'rgba(0,0,0,0.3)';
       ctx.beginPath();
@@ -1631,6 +1753,47 @@ function init(root, header) {
     ctx.fillStyle = '#fff';
     ctx.fillText('× ' + coins, 42, 26);
 
+    // the clock, top right, with the par beside it (the banner owns the centre)
+    const secs = Math.floor(clock / 60);
+    const par = lv.world.par;
+    const clockW = par ? 124 : 76;
+    ctx.fillStyle = 'rgba(10,14,24,0.55)';
+    ctx.beginPath();
+    ctx.roundRect(VIEW_W - 10 - clockW, 10, clockW, 30, 8);
+    ctx.fill();
+    ctx.textAlign = 'right';
+    ctx.font = '700 15px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = par && secs > par ? '#ff8a8a' : '#fff';
+    ctx.fillText(fmtTime(secs), VIEW_W - 20, 26);
+    if (par) {
+      ctx.textAlign = 'left';
+      ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.6)';
+      ctx.fillText('par ' + fmtTime(par), VIEW_W - clockW, 27);
+    }
+    ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+
+    // race: who's ahead, by distance to the flag
+    if (run.race) {
+      const order = [...ents.entries()].map(([seat, e]) => ({ seat, x: e.x })).concat(body ? [{ seat: mySeat(), x: body.x }] : [])
+        .sort((a, b) => b.x - a.x);
+      const lead = order[0];
+      if (lead) {
+        const ch = CHARACTERS[view.seats[lead.seat]?.char] || CHARACTERS.rex;
+        ctx.fillStyle = 'rgba(10,14,24,0.55)';
+        ctx.beginPath();
+        ctx.roundRect(VIEW_W - 130, 46, 120, 22, 6);
+        ctx.fill();
+        ctx.fillStyle = ch.hex;
+        ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText((lead.seat === mySeat() ? 'You' : view.seats[lead.seat]?.name || '?') + ' leads', VIEW_W - 70, 58);
+        ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+        ctx.textAlign = 'left';
+      }
+    }
+
     // lives: the hero's cap, then the count
     if (run.lives !== null && run.lives !== undefined) {
       ctx.fillStyle = 'rgba(10,14,24,0.55)';
@@ -1685,26 +1848,27 @@ function init(root, header) {
       ctx.restore();
     }
 
-    // the active buff, with a draining bar
+    // the active buff, with a draining bar, left of the clock
     if (body?.buff) {
       const look = PICKUP_LOOK[body.buff.type];
       const k = body.buff.t / BUFF_STEPS;
+      const bx = VIEW_W - 10 - clockW - 8 - 120;
       ctx.fillStyle = 'rgba(10,14,24,0.55)';
       ctx.beginPath();
-      ctx.roundRect(VIEW_W - 130, 10, 120, 30, 8);
+      ctx.roundRect(bx, 10, 120, 30, 8);
       ctx.fill();
       ctx.fillStyle = look.bg;
       ctx.beginPath();
-      ctx.roundRect(VIEW_W - 122, 16, 18, 18, 5);
+      ctx.roundRect(bx + 8, 16, 18, 18, 5);
       ctx.fill();
       ctx.fillStyle = '#1b1020';
       ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(look.glyph, VIEW_W - 113, 26);
+      ctx.fillText(look.glyph, bx + 17, 26);
       ctx.fillStyle = 'rgba(255,255,255,0.25)';
-      ctx.fillRect(VIEW_W - 98, 21, 80, 8);
+      ctx.fillRect(bx + 32, 21, 80, 8);
       ctx.fillStyle = k < 0.25 && Math.floor(ts / 150) % 2 === 0 ? '#ff8a8a' : look.bg;
-      ctx.fillRect(VIEW_W - 98, 21, 80 * k, 8);
+      ctx.fillRect(bx + 32, 21, 80 * k, 8);
       ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
       ctx.textAlign = 'left';
     }
@@ -1781,18 +1945,33 @@ function init(root, header) {
       b.onclick = () => intent({ t: 'char', c: b.dataset.c });
     });
 
-    el('worldrow').innerHTML = WORLDS.map((w) => `
-      <button class="worldbtn ${view.world === w.id ? 'picked' : ''}" data-w="${w.id}"
-              ${isHost ? '' : 'disabled'}
-              style="--s0:${w.palette.sky[0]};--s1:${w.palette.sky[1]};--g:${w.palette.groundTop}">
-        <span class="sw"></span>
-        <span class="wname">${esc(w.name)}</span>
-      </button>`).join('');
+    const open = unlockedWorlds(view.progress);
+    el('campaign').innerHTML = WORLDS.map((w, i) => {
+      const locked = !open.has(w.id);
+      const rec = view.progress?.cleared?.[w.id];
+      const cls = 'wnode' + (view.world === w.id ? ' picked' : '') + (locked ? ' locked' : '') + (rec ? ' cleared' : '');
+      const meta = rec ? `💎 ${rec.gems}/3 · ${fmtTime(rec.best)}` : locked ? 'Locked' : w.boss ? 'Boss' : 'New';
+      return `
+        <button class="${cls}" data-w="${w.id}" ${isHost && !locked ? '' : 'disabled'}
+                title="${esc(w.sub)}"
+                style="--s0:${w.palette.sky[0]};--s1:${w.palette.sky[1]};--g:${w.palette.groundTop}">
+          <span class="sw"><span class="wnum">${i + 1}</span></span>
+          <span class="wname">${esc(w.name)}</span>
+          <span class="wmeta">${meta}</span>
+        </button>`;
+    }).join('');
     if (isHost) {
-      el('worldrow').querySelectorAll('.worldbtn').forEach((b) => {
+      el('campaign').querySelectorAll('.wnode').forEach((b) => {
         b.onclick = () => intent({ t: 'world', w: b.dataset.w });
       });
     }
+    const race = el('racemode');
+    race.checked = view.mode === 'race';
+    race.disabled = !isHost;
+    race.onchange = () => intent({ t: 'mode', m: race.checked ? 'race' : 'coop' });
+    const unlock = el('unlockall');
+    unlock.hidden = !isHost || !!view.progress?.all;
+    unlock.onclick = () => intent({ t: 'unlockall' });
 
     el('seats').innerHTML = view.seats.map((s) => {
       const ch = CHARACTERS[s.char];
@@ -1810,8 +1989,8 @@ function init(root, header) {
     startBtn.disabled = !ready;
     startBtn.onclick = () => intent({ t: 'start' });
     el('starthint').textContent = isHost
-      ? (ready ? `${view.seats.length} playing · ${WORLD_BY_ID.get(view.world).name}` : 'Everyone picks a hero first.')
-      : 'Waiting for the host to start…';
+      ? (ready ? `${view.seats.length} playing · ${WORLD_BY_ID.get(view.world).name}${view.mode === 'race' ? ' · race' : ''}` : 'Everyone picks a hero first.')
+      : `Waiting for the host to start… ${WORLD_BY_ID.get(view.world).name}${view.mode === 'race' ? ' · race' : ''}`;
 
     const copy = el('copy');
     copy.onclick = async () => {
@@ -1827,7 +2006,8 @@ function init(root, header) {
 
   function renderSide() {
     const w = WORLD_BY_ID.get(view.run.worldId);
-    el('worldinfo').innerHTML = `<div class="wtitle">${esc(w.name)}</div><div class="wsub">${esc(w.sub)}</div>`;
+    el('worldinfo').innerHTML = `<div class="wtitle">${esc(w.name)}${view.run.race ? ' · race' : ''}</div><div class="wsub">${esc(w.sub)}</div>` +
+      (w.par ? `<div class="wsub">Par ${fmtTime(w.par)}${view.progress?.cleared?.[w.id]?.best != null ? ` · best ${fmtTime(view.progress.cleared[w.id].best)}` : ''}</div>` : '');
 
     el('party').innerHTML = view.seats.map((s, i) => {
       const ch = CHARACTERS[s.char];
@@ -1883,10 +2063,14 @@ function init(root, header) {
         </div>`;
     } else {
       const who = view.seats[view.run.clearBy];
+      const secs = Math.round((view.run.clearSteps || 0) / 60);
+      const under = world.par && secs <= world.par;
+      const best = view.progress?.cleared?.[world.id]?.best;
       modal.innerHTML = `
         <div class="card2 clear">
-          <h2>COURSE CLEAR!</h2>
-          <div class="sub">${esc(who?.name || 'Someone')} reached the flag on ${esc(world.name)}.
+          <h2>${view.run.race ? esc((who?.name || 'Someone').toUpperCase()) + ' WINS!' : 'COURSE CLEAR!'}</h2>
+          <div class="sub">${view.run.race ? 'First to the flag' : esc(who?.name || 'Someone') + ' reached the flag'} on ${esc(world.name)}
+            in <b>${fmtTime(secs)}</b>${world.par ? ` (par ${fmtTime(world.par)}${under ? ' — under par!' : ''})` : ''}${best != null && secs <= best ? ' · new best' : ''}.<br>
             Gems: ${gemsGot} / ${gemsAll}${gemsGot === gemsAll ? ' — all of them!' : ''}</div>
           <div class="ctable">${scoreRows()}</div>
           ${isHost ? `

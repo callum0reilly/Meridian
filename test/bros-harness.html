@@ -99,8 +99,10 @@ if (q.get('auto') === '1') {
       $(B, '.charcard[data-c="bea"]').click();
     }
     await sleep(50);
-    const wb = $(A, `.worldbtn[data-w="${world}"]`);
+    if ($(A, '.unlockall') && !$(A, '.unlockall').hidden) { $(A, '.unlockall').click(); await sleep(50); }
+    const wb = $(A, `.wnode[data-w="${world}"]`);
     if (wb) wb.click();
+    if (q.get('race') === '1') { $(A, '.racemode').click(); await sleep(50); }
     await waitFor(() => !$(A, '.start').disabled, 'start enabled');
     $(A, '.start').click();
     await waitFor(() => $(A, '.board'), 'the board');

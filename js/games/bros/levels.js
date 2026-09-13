@@ -34,6 +34,7 @@
 //   X  spiker enemy — do NOT stomp it
 //   Y  flyer — bobs back and forth in the air; stompable from above
 //   J  hopper — a walker that jumps on a beat; stompable
+//   Q  the boss — three stomps, stunned between them; felling it unlocks doors
 //   C  checkpoint pennant (per player: touch it and you respawn there)
 //   S  where players start
 //   F  the goal flag
@@ -406,6 +407,55 @@ export const WORLDS = [
       rect(138, 12, 149, 16, '#'); put(141, 11, 'E'); put(146, 11, 'F');
     }),
   },
+
+  {
+    id: 'reactor',
+    name: 'The Reactor',
+    sub: 'Everything at once, then the thing at the end.',
+    ice: false,
+    lives: 5,
+    par: 150,
+    boss: true,
+    palette: {
+      sky: ['#150808', '#4a1616'],
+      hillFar: '#2a1212', hillNear: '#3a1818',
+      groundTop: '#8a93a6', ground: '#3b3f4a', groundDark: '#2b2e36',
+      brick: '#5a5f6e', brickDark: '#43474f',
+      block: '#ffb224', blockDead: '#5d5566',
+      pillar: '#6b7386', pillarDark: '#4f5666',
+      platform: '#7c8698',
+      spike: '#c9d3e6',
+      lava: '#ff5c2e', lavaGlow: '#ffcf3e',
+      laser: '#ff3b6b', laserGlow: '#ff9ab5',
+      water: 'rgba(72,220,160,0.4)', waterTop: 'rgba(200,255,230,0.7)',
+      flag: '#39c0d6',
+    },
+    map: build(150, (put, rect) => {
+      // The loading bay
+      rect(0, 13, 14, 16, '#'); put(2, 12, 'S'); put(6, 10, 'ooo');
+      rect(15, 16, 17, 16, '~');
+      rect(18, 13, 30, 16, '#'); put(24, 12, 'J'); put(27, 12, '^^'); put(21, 10, 'oo');
+      // The vent: an updraft over lava, up to the catwalk
+      rect(31, 3, 33, 15, 'u'); rect(31, 16, 33, 16, '~');
+      rect(34, 6, 44, 16, '#'); put(38, 5, 'lll'); put(36, 3, 'oo'); put(42, 3, 'oo');
+      // The coolant pool
+      rect(45, 10, 47, 16, '#');
+      rect(48, 16, 62, 16, '#'); rect(48, 11, 62, 15, 'w'); put(55, 13, 'Y'); put(56, 15, 'G'); put(51, 13, 'oo'); put(59, 13, 'oo');
+      rect(63, 10, 66, 16, '#');
+      // The gantry — checkpoint, walker, spiker, a heart, a ward for what's next
+      rect(67, 12, 80, 16, '#'); put(69, 11, 'C'); put(74, 11, 'E'); put(78, 11, 'X'); put(72, 8, '?@?'); put(70, 10, 'W');
+      // The mover over the lava, through a beam
+      rect(81, 16, 96, 16, '~'); put(82, 11, 'M'); put(83, 11, '-------------'); rect(89, 5, 89, 10, 'L');
+      // The last approach — hopper, flyer, a spring to the gem
+      rect(97, 12, 110, 16, '#'); put(102, 11, 'J'); put(106, 7, 'Y'); put(108, 12, '!'); put(108, 5, 'G'); put(100, 9, 'oo');
+      // A low wall the boss can't clear, and the arena
+      rect(110, 10, 110, 11, '|');
+      rect(111, 12, 138, 16, '#'); put(128, 11, 'Q'); put(118, 8, '?B?'); put(132, 9, '==='); put(136, 6, '==='); put(137, 4, 'G');
+      put(114, 10, 'oo'); put(124, 10, 'oo');
+      // The gate opens when the boss falls
+      rect(139, 12, 149, 16, '#'); rect(139, 6, 139, 11, 'D'); put(146, 11, 'F');
+    }),
+  },
 ];
 
 export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
@@ -463,7 +513,7 @@ export const hazardAt = (lv, tx, ty, step) => {
 };
 
 export const PICKUPS = { Z: 'speed', W: 'ward', N: 'magnet' };
-export const ENEMY_GLYPHS = { E: 'walker', X: 'spiker', Y: 'flyer', J: 'hopper' };
+export const ENEMY_GLYPHS = { E: 'walker', X: 'spiker', Y: 'flyer', J: 'hopper', Q: 'boss' };
 
 /* ---- the clock-driven scenery ----
    Movers and wind are pure functions of the shared step count, so every

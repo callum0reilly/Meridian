@@ -34,8 +34,11 @@ import {
   collectCoins, collectGems, collectPickups, collectKeys, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyKey, applyStomp, applyDeath, applyFlag,
-  nextWorldId, unlockedWorlds, recordClear, fmtTime, BOSS_BOUNCE,
+  nextWorldId, unlockedWorlds, recordClear, fmtTime, BOSS_BOUNCE, HARD_WORLDS,
 } from './rules.js';
+import { registerCustom } from './levels.js';
+import { sanitiseLevel, loadLevels } from './share.js';
+import { mountEditor } from './editor.js';
 import { sfx, unlock as unlockAudio, isMuted, setMuted } from './sfx.js';
 
 const GAME = 'bros';
@@ -78,6 +81,10 @@ const LOBBY_HTML = `
       </div>
 
       <div class="err lobbyerr"></div>
+
+      <div class="or">or</div>
+      <div class="customnote" hidden></div>
+      <button class="editor-open">Level editor</button>
     </div>
   </div>
 `;
@@ -98,6 +105,8 @@ const WAIT_HTML = `
 
       <div class="subhead">World</div>
       <div class="campaign"></div>
+      <div class="hardrow"></div>
+      <div class="customrow"></div>
       <div class="maprow">
         <label class="modetoggle"><input type="checkbox" class="racemode"> Race — first to the flag wins, no shared lives</label>
         <button class="linkbtn unlockall">Unlock everything</button>
@@ -164,6 +173,7 @@ function init(root, header) {
   let view = null;         // what everyone renders from — the last room push
   let selfId = null;
   let myName = 'Player';
+  let pendingCustom = null; // a level from the editor, waiting for a room to be made
 
   /* ---- the local model of the level ---- */
   let lv = null;           // parsed level (every machine parses its own copy)
@@ -246,6 +256,14 @@ function init(root, header) {
     const codeIn = el('codein');
     codeIn.addEventListener('input', () => { codeIn.value = normaliseCode(codeIn.value); });
 
+    el('editor-open').onclick = () => showEditor();
+    if (pendingCustom) {
+      const note = el('customnote');
+      note.hidden = false;
+      note.innerHTML = `Your level <b>${esc(pendingCustom.name)}</b> is ready — create a room to play it. <button class="linkbtn dropcustom">Never mind</button>`;
+      note.querySelector('.dropcustom').onclick = () => { pendingCustom = null; showLobby(); };
+    }
+
     const takeName = () => {
       myName = (nameIn.value || '').trim().slice(0, 12) || 'Player';
       return myName;
@@ -264,12 +282,15 @@ function init(root, header) {
           phase: 'wait',
           code: room.code,
           hostId: selfId,
-          world: WORLDS[0].id,
+          world: pendingCustom ? pendingCustom.id : WORLDS[0].id,
+          custom: pendingCustom,
           mode: 'coop',
           progress: loadProgress(),
           seats: [{ id: selfId, name: myName, char: null, connected: true }],
           run: null,
         };
+        if (pendingCustom) registerCustom(pendingCustom);
+        pendingCustom = null;
         leaveBtn.hidden = false;
         pushRoom();
       } catch (e) {
@@ -301,6 +322,16 @@ function init(root, header) {
 
     codeIn.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') el('join').click(); });
     nameIn.focus();
+  }
+
+  function showEditor() {
+    canvas = null; ctx = null;
+    leaveBtn.hidden = true;
+    mountEditor(root, {
+      initial: pendingCustom,
+      onBack: () => showLobby(),
+      onPlay: (def) => { pendingCustom = def; showLobby(); },
+    });
   }
 
   /* ========================= host: the room ========================= */
@@ -379,6 +410,17 @@ function init(root, header) {
       return;
     }
 
+    if (msg.t === 'custom') {
+      if (fromId !== state.hostId || state.phase !== 'wait') return;
+      let def;
+      try { def = sanitiseLevel(msg.def); } catch { return; }
+      registerCustom(def);
+      state.custom = def;
+      state.world = def.id;
+      pushRoom();
+      return;
+    }
+
     if (msg.t === 'unlockall') {
       if (fromId !== state.hostId || state.phase !== 'wait') return;
       state.progress = { ...state.progress, all: true };
@@ -435,8 +477,10 @@ function init(root, header) {
       if (applyFlag(run, seat)) {
         state.phase = 'clear';
         stopSim();
-        state.progress = recordClear(state.progress, run);
-        saveProgress(state.progress);
+        if (!run.lv.world.custom) {
+          state.progress = recordClear(state.progress, run);
+          saveProgress(state.progress);
+        }
         pushRoom();
       }
     }
@@ -460,6 +504,7 @@ function init(root, header) {
       code: state.code,
       hostId: state.hostId,
       world: state.world,
+      custom: state.custom && state.custom.id === state.world ? state.custom : null,
       mode: state.mode,
       progress: state.progress,
       seats: state.seats.map((s) => ({ id: s.id, name: s.name, char: s.char, connected: s.connected })),
@@ -565,6 +610,9 @@ function init(root, header) {
   function applyRoom(next) {
     const prevPhase = view?.phase;
     view = next;
+    // A custom world travels inside the push; every machine registers the
+    // same definition under the same id before anyone parses it.
+    if (view.custom && !WORLD_BY_ID.has(view.custom.id)) registerCustom(view.custom);
 
     if (view.phase === 'play' && prevPhase !== 'play') startPlay();
 
@@ -1788,7 +1836,7 @@ function init(root, header) {
         ctx.fillStyle = ch.hex;
         ctx.font = '600 12px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'center';
-        ctx.fillText((lead.seat === mySeat() ? 'You' : view.seats[lead.seat]?.name || '?') + ' leads', VIEW_W - 70, 58);
+        ctx.fillText(lead.seat === mySeat() ? 'You lead' : (view.seats[lead.seat]?.name || '?') + ' leads', VIEW_W - 70, 58);
         ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
         ctx.textAlign = 'left';
       }
@@ -1810,11 +1858,13 @@ function init(root, header) {
       ctx.fillText('× ' + run.lives, 140, 26);
     }
 
-    // gems: three slots
-    ctx.fillStyle = 'rgba(10,14,24,0.55)';
-    ctx.beginPath();
-    ctx.roundRect(192, 10, 24 + lv.gems.length * 22, 30, 8);
-    ctx.fill();
+    // gems: one slot each
+    if (lv.gems.length) {
+      ctx.fillStyle = 'rgba(10,14,24,0.55)';
+      ctx.beginPath();
+      ctx.roundRect(192, 10, 24 + lv.gems.length * 22, 30, 8);
+      ctx.fill();
+    }
     for (let i = 0; i < lv.gems.length; i++) {
       const x = 212 + i * 22;
       if (gems.has(i)) drawGem(x, 25, 7, ts, i);
@@ -1965,6 +2015,25 @@ function init(root, header) {
         b.onclick = () => intent({ t: 'world', w: b.dataset.w });
       });
     }
+
+    // Hard variants, once their originals are cleared.
+    const hards = HARD_WORLDS.filter((h) => open.has(h.id));
+    el('hardrow').innerHTML = hards.length ? '<span class="cap">Hard mode</span>' + hards.map((h) => {
+      const rec = view.progress?.cleared?.[h.id];
+      return `<button class="pill${view.world === h.id ? ' picked' : ''}" data-w="${h.id}" ${isHost ? '' : 'disabled'} title="${esc(h.sub)}">
+        ${esc(h.name)}${rec ? ` <span class="ok">✓ ${fmtTime(rec.best)}</span>` : ''}</button>`;
+    }).join('') : '';
+    if (isHost) el('hardrow').querySelectorAll('.pill').forEach((b) => { b.onclick = () => intent({ t: 'world', w: b.dataset.w }); });
+
+    // Custom levels: the host's shelf, and whatever is picked (which the
+    // others only know by name).
+    const shelf = isHost ? loadLevels() : [];
+    const picked = view.custom;
+    const items = shelf.map((d) => `<button class="pill${view.world === d.id ? ' picked' : ''}" data-i="${shelf.indexOf(d)}" title="A custom level">✎ ${esc(d.name)}</button>`);
+    if (picked && !shelf.some((d) => d.id === picked.id)) items.unshift(`<button class="pill picked" disabled>✎ ${esc(picked.name)}</button>`);
+    el('customrow').innerHTML = items.length ? '<span class="cap">Your levels</span>' + items.join('') : '';
+    if (isHost) el('customrow').querySelectorAll('.pill[data-i]').forEach((b) => { b.onclick = () => intent({ t: 'custom', def: shelf[+b.dataset.i] }); });
+
     const race = el('racemode');
     race.checked = view.mode === 'race';
     race.disabled = !isHost;
@@ -2075,8 +2144,8 @@ function init(root, header) {
           <div class="ctable">${scoreRows()}</div>
           ${isHost ? `
             <div class="btnrow">
-              <button class="primary go-next">Next world</button>
-              <button class="go-replay">Replay</button>
+              ${world.custom || world.hard ? '' : '<button class="primary go-next">Next world</button>'}
+              <button class="${world.custom || world.hard ? 'primary ' : ''}go-replay">Replay</button>
               <button class="go-room">Back to room</button>
             </div>`
           : '<div class="hint">Waiting for the host to pick what\'s next…</div>'}

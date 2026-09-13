@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  TILE, ROWS, WORLDS, parseWorld, tileAt,
+  TILE, ROWS, WORLDS, HARD_WORLDS, WORLD_BY_ID, parseWorld, tileAt,
   CHARACTERS, CHAR_IDS, PLAYER_H, ENEMY,
   GRAVITY, COYOTE, JUMP_CUT, SPAWN_INVULN, SPRING_VY, BUFF_STEPS, COINS_PER_LIFE,
   makeBody, stepPlayer, kill, hurt, respawn, eatPickup, hasBuff,
@@ -14,7 +14,8 @@ import {
   nextWorldId, moverPos, windAt, laserPhase, LASER_PERIOD, LASER_ON,
   applyKey, unlockedWorlds, recordClear, fmtTime,
 } from '../js/games/bros/rules.js';
-import { solidAt, hazardAt } from '../js/games/bros/levels.js';
+import { solidAt, hazardAt, registerCustom } from '../js/games/bros/levels.js';
+import { encodeLevel, decodeLevel, sanitiseLevel } from '../js/games/bros/share.js';
 
 /* ---------------- helpers ---------------- */
 
@@ -786,7 +787,64 @@ test('clearing a world unlocks the next; the record keeps best gems and time', (
   progress = recordClear(progress, again);
   assert.deepEqual(progress.cleared[WORLDS[0].id], { gems: 2, best: 90 }, 'a slower run with fewer gems changes nothing');
 
-  assert.equal(unlockedWorlds({ all: true, cleared: {} }).size, WORLDS.length, '"unlock everything" opens the lot');
+  assert.ok(unlockedWorlds(progress).has(WORLDS[0].id + '-hard'), 'and so does its hard variant');
+  assert.ok(!unlockedWorlds(progress).has(WORLDS[1].id + '-hard'), 'but not the next one\'s');
+  assert.equal(unlockedWorlds({ all: true, cleared: {} }).size, WORLDS.length + HARD_WORLDS.length, '"unlock everything" opens the lot');
+});
+
+test('hard variants keep the layout, cut the lives, and add trouble', () => {
+  assert.equal(HARD_WORLDS.length, 4);
+  for (const h of HARD_WORLDS) {
+    const base = WORLDS.find((w) => w.id === h.base);
+    assert.ok(base, `${h.id} has a base world`);
+    assert.equal(h.lives, 3);
+    assert.ok(h.par > base.par);
+    const lv = parseWorld(h), blv = parseWorld(base);
+    assert.equal(lv.w, blv.w);
+    assert.equal(lv.gems.length, 3);
+    assert.ok(lv.enemies.length > blv.enemies.length, `${h.id}: more enemies`);
+    assert.ok(lv.enemies.filter((e) => e.type === 'spiker').length > blv.enemies.filter((e) => e.type === 'spiker').length, `${h.id}: more spikers`);
+    assert.deepEqual(lv.flag, blv.flag, 'same flag');
+    for (const row of h.map) assert.equal(row.length, lv.w);
+  }
+});
+
+/* ---------------- level codes ---------------- */
+
+test('a level survives the trip through a share code', () => {
+  const def = { name: 'Pit; of doom', theme: 'cavern', ice: false, wind: true, lives: 3, par: 60, map: WORLDS[0].map };
+  const code = encodeLevel(def);
+  assert.ok(code.startsWith('MB1;'));
+  assert.ok(code.length < WORLDS[0].map.join('').length / 4, 'far shorter than the raw rows');
+  const back = decodeLevel(code);
+  assert.deepEqual(back.map, WORLDS[0].map);
+  assert.equal(back.name, 'Pit; of doom');
+  assert.equal(back.theme, 'cavern');
+  assert.equal(back.wind, true);
+  assert.equal(back.lives, 3);
+  assert.equal(back.par, 60);
+  assert.equal(decodeLevel(code).id, back.id, 'the same content gets the same id');
+  const world = registerCustom(back);
+  assert.equal(world.palette, WORLD_BY_ID.get('cavern').palette, 'borrows the theme\'s palette');
+  assert.ok(world.wind > 0, 'and its wind, when asked');
+  const lv = parseWorld(world);
+  assert.equal(lv.w, 150);
+  assert.equal(lv.gems.length, 3);
+});
+
+test('level codes are checked before anyone plays them', () => {
+  const rows = (fn) => Array.from({ length: ROWS }, (_, y) => fn(y).padEnd(40, '.'));
+  const ok = rows((y) => (y === ROWS - 3 ? '.S....F' : y >= ROWS - 2 ? '#'.repeat(40) : ''));
+  assert.equal(sanitiseLevel({ name: 'x', theme: 'meadow', map: ok }).map.length, ROWS);
+  assert.throws(() => sanitiseLevel({ name: 'x', theme: 'meadow', map: rows((y) => (y >= ROWS - 2 ? '#'.repeat(40) : '')) }), /start/);
+  assert.throws(() => sanitiseLevel({ name: 'x', theme: 'meadow', map: rows((y) => (y === ROWS - 3 ? '.S.S..F' : '')) }), /one start/);
+  assert.throws(() => sanitiseLevel({ name: 'x', theme: 'meadow', map: rows((y) => (y === ROWS - 3 ? '.S....Fz' : '')) }), /Unknown tile/);
+  assert.throws(() => sanitiseLevel({ name: 'x', theme: 'meadow', map: ['S...F'] }), /at least/);
+  assert.throws(() => decodeLevel('hello'), /level code/);
+  assert.throws(() => decodeLevel('MB1;n;meadow;;5;;150./150.'), /start/);
+  const themed = sanitiseLevel({ name: 'x', theme: 'nope', map: ok });
+  assert.equal(themed.theme, WORLDS[0].id, 'an unknown theme falls back to the first world');
+  assert.equal(sanitiseLevel({ name: 'x', theme: 'meadow', lives: 500, map: ok }).lives, 5, 'silly lives are reset');
 });
 
 test('the world tour advances and wraps', () => {

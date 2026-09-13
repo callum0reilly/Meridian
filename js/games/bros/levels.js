@@ -458,7 +458,81 @@ export const WORLDS = [
   },
 ];
 
-export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
+/* ---- hard variants ----
+   The first four worlds again, meaner: three lives, spikers where walkers
+   were, flyers over the pits, a few spikes where you used to be able to
+   relax. Same layout, so what you learned still counts. */
+
+function harder(base, name, fn) {
+  return {
+    ...base,
+    id: base.id + '-hard',
+    base: base.id,
+    hard: true,
+    name,
+    sub: base.sub + ' Now with fewer excuses.',
+    lives: 3,
+    par: Math.round(base.par * 1.15),
+    map: edit(base.map, fn),
+  };
+}
+
+export const HARD_WORLDS = [
+  harder(WORLDS[0], 'Meadow March ★', (put) => {
+    put(40, 14, 'X'); put(74, 14, 'X'); put(116, 14, 'X');
+    put(60, 10, 'Y'); put(105, 10, 'Y');
+    put(97, 11, '^');
+    put(83, 15, '....'); put(83, 16, '....');      // the small pit, not so small
+  }),
+  harder(WORLDS[1], 'Cavern Crawl ★', (put) => {
+    put(12, 14, 'X');
+    put(62, 14, '^^'); put(92, 14, '^^');
+    put(30, 10, 'Y'); put(118, 9, 'Y');
+  }),
+  harder(WORLDS[2], 'Frostpeak ★', (put) => {
+    put(20, 14, 'X');
+    put(51, 9, 'Y'); put(111, 9, 'Y');
+    put(57, 14, '^^'); put(85, 14, '^');
+  }),
+  harder(WORLDS[3], 'Sunset Citadel ★', (put) => {
+    put(17, 14, 'X');
+    put(48, 9, 'Y'); put(96, 9, 'Y');
+    put(76, 14, '^^');
+  }),
+];
+
+export const WORLD_BY_ID = new Map([...WORLDS, ...HARD_WORLDS].map((w) => [w.id, w]));
+
+/* ---- custom worlds ----
+   A level from the editor is a name, a theme (whose palette and feel it
+   borrows) and its rows. Registering one gives every machine the same world
+   object under the same id, which is all the run code needs. */
+
+export function materialiseCustom(def) {
+  const theme = WORLD_BY_ID.get(def.theme) || WORLDS[0];
+  return {
+    id: def.id,
+    custom: true,
+    name: def.name,
+    sub: `A custom level, in the style of ${theme.name}.`,
+    ice: !!def.ice,
+    wind: def.wind ? theme.wind || 0.035 : 0,
+    creature: theme.creature,
+    lives: def.lives ?? 5,
+    par: def.par ?? null,
+    palette: theme.palette,
+    map: def.map,
+  };
+}
+
+export function registerCustom(def) {
+  const world = materialiseCustom(def);
+  WORLD_BY_ID.set(world.id, world);
+  return world;
+}
+
+/** Every glyph a map may contain, for the editor and for checking codes. */
+export const GLYPHS = '.#B?@|=!^~wuLl-:MVDK$oGZWNEXYJQCSF';
 
 /* ---- tile queries ----
    Outside the level: the left and right edges are walls, the sky above is

@@ -26,7 +26,7 @@
 // batched three at a time inside its 20Hz network tick.
 
 import {
-  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld,
+  TILE, ROWS, WORLDS, HARD_WORLDS, WORLD_BY_ID, parseWorld,
   tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt, updraftAt, waterAt,
   moverPos, windAt, laserPhase, MOVER_W, MOVER_H, LASER_PERIOD, LASER_ON,
 } from './levels.js';
@@ -91,7 +91,7 @@ export const WATER_DRAG = 0.75;         // top speed scale while submerged
 
 /* re-exported so index.js has one import for game data */
 export {
-  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, laserPhase,
+  TILE, ROWS, WORLDS, HARD_WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, laserPhase,
   MOVER_W, MOVER_H, LASER_PERIOD, LASER_ON,
 };
 
@@ -722,14 +722,16 @@ export function nextWorldId(worldId) {
 
 /* ============================ the campaign ============================ */
 
-/** Which worlds are open: the first, everything after a cleared one, and
- *  everything if the player has asked for the lot. */
+/** Which worlds are open: the first, everything after a cleared one, a hard
+ *  variant once its original is cleared, and everything if the player has
+ *  asked for the lot. */
 export function unlockedWorlds(progress) {
-  if (progress?.all) return new Set(WORLDS.map((w) => w.id));
+  if (progress?.all) return new Set([...WORLDS, ...HARD_WORLDS].map((w) => w.id));
   const open = new Set([WORLDS[0].id]);
   for (let i = 0; i < WORLDS.length - 1; i++) {
     if (progress?.cleared?.[WORLDS[i].id]) open.add(WORLDS[i + 1].id);
   }
+  for (const h of HARD_WORLDS) if (progress?.cleared?.[h.base]) open.add(h.id);
   return open;
 }
 

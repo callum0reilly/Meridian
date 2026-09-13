@@ -20,6 +20,12 @@
 //   G  gem — three per world, tucked off the required path
 //   Z  speed surge pickup (timed)    W  spike ward pickup (timed)
 //   N  coin magnet pickup (timed)
+//   $  breakable brick — bump once to crack it, again to smash it to air
+//   D  door (solid until the team finds a key, or fells a boss)
+//   K  key — any one player picking it up opens every door in the world
+//   w  water: sink slowly, tap jump to swim, a full jump at the surface
+//   L  l  laser beam tiles: deadly for part of a cycle, harmless the rest;
+//         L and l run on opposite phases so a pair makes a rhythm
 //   u  updraft (air that lifts you; columns of it over a pit are the lift)
 //   M  moving platform, patrolling sideways along the '-' rail on its row
 //   V  moving platform, patrolling up and down the ':' rail in its column
@@ -27,6 +33,7 @@
 //   E  walker enemy — stomp it
 //   X  spiker enemy — do NOT stomp it
 //   Y  flyer — bobs back and forth in the air; stompable from above
+//   J  hopper — a walker that jumps on a beat; stompable
 //   C  checkpoint pennant (per player: touch it and you respawn there)
 //   S  where players start
 //   F  the goal flag
@@ -309,6 +316,96 @@ export const WORLDS = [
       rect(142, 10, 149, 16, '#'); put(146, 9, 'F');
     }),
   },
+
+  {
+    id: 'ruins',
+    name: 'Sunken Ruins',
+    sub: 'A flooded temple. Tap jump to swim; find the key.',
+    ice: false,
+    creature: 'fish',   // what the flyers look like here
+    lives: 5,
+    par: 110,
+    palette: {
+      sky: ['#0d2b3a', '#1f6b7a'],
+      hillFar: '#164452', hillNear: '#1d5866',
+      groundTop: '#7fb8a2', ground: '#3d6b62', groundDark: '#2c4f48',
+      brick: '#4f8577', brickDark: '#3a6358',
+      block: '#ffb224', blockDead: '#6b6b52',
+      pillar: '#8fb7ab', pillarDark: '#6d948a',
+      platform: '#a9c9bd',
+      spike: '#cfe4dc',
+      lava: null, lavaGlow: null,
+      water: 'rgba(52,152,219,0.45)', waterTop: 'rgba(200,240,255,0.7)',
+      flag: '#ffb224',
+    },
+    map: build(150, (put, rect) => {
+      // Bank A — dry stone, one walker
+      rect(0, 12, 20, 16, '#'); put(2, 11, 'S'); put(8, 9, 'ooo'); put(14, 11, 'E');
+      // Pool 1 — learn to swim; a gem on the bottom, spikes nearby, a fish
+      rect(21, 16, 40, 16, '#'); rect(21, 13, 40, 15, 'w');
+      put(30, 15, 'G'); put(25, 14, 'oo'); put(35, 14, 'oo'); put(33, 15, '^^'); put(28, 14, 'Y');
+      // Bank B
+      rect(41, 12, 60, 16, '#'); put(46, 11, 'E'); put(54, 11, 'E'); put(50, 8, '?'); put(44, 10, 'oo'); put(57, 10, 'N');
+      // The shaft — a flooded tower you swim up; a doorway at the bottom, a wall to climb over at the top
+      rect(61, 16, 75, 16, '#'); rect(61, 4, 75, 15, 'w'); rect(60, 3, 60, 10, '#'); rect(76, 5, 76, 16, '#');
+      put(66, 10, '==='); put(63, 8, 'o'); put(63, 6, 'o'); put(70, 12, 'o'); put(70, 9, 'o');
+      put(66, 13, 'Y'); put(71, 6, 'Y'); put(74, 15, 'G');
+      // Bank C — high ground, checkpoint, a spiker
+      rect(77, 9, 90, 16, '#'); put(80, 8, 'C'); put(86, 8, 'X'); put(83, 6, 'ooo');
+      // Pool 2 — the key lies on the bottom between two pillars
+      rect(91, 16, 110, 16, '#'); rect(91, 12, 110, 15, 'w'); rect(96, 14, 96, 15, '|'); rect(103, 13, 103, 15, '|');
+      put(100, 15, 'K'); put(94, 13, 'oo'); put(106, 13, 'oo'); put(99, 13, 'Y');
+      // Bank D — hopper, heart block, a climb to the third gem
+      rect(111, 12, 127, 16, '#'); put(118, 11, 'J'); put(114, 8, '@'); put(116, 9, '==='); put(121, 7, '==='); put(122, 5, 'G'); put(124, 11, 'E');
+      // The door, and the flag beyond it
+      rect(128, 12, 149, 16, '#'); rect(128, 7, 128, 11, 'D'); put(135, 11, 'E'); put(140, 9, 'oo'); put(146, 11, 'F');
+    }),
+  },
+
+  {
+    id: 'sprawl',
+    name: 'Neon Sprawl',
+    sub: 'Rooftops at night. Lasers keep time; so should you.',
+    ice: false,
+    lives: 5,
+    par: 120,
+    palette: {
+      sky: ['#0b0716', '#3a1d5c'],
+      hillFar: '#1c1233', hillNear: '#2b1a48',
+      groundTop: '#c563e6', ground: '#2e2542', groundDark: '#211a31',
+      brick: '#4a3a66', brickDark: '#382b4f',
+      block: '#ffb224', blockDead: '#5d5566',
+      pillar: '#5f4e85', pillarDark: '#463a63',
+      platform: '#8b7ab0',
+      spike: '#e0d4f5',
+      lava: null, lavaGlow: null,
+      laser: '#ff3b6b', laserGlow: '#ff9ab5',
+      flag: '#39c0d6',
+    },
+    map: build(150, (put, rect) => {
+      // Rooftop A
+      rect(0, 13, 16, 16, '#'); put(2, 12, 'S'); put(8, 10, 'ooo'); put(13, 12, 'E');
+      // Rooftop B — a hopper, a vertical beam to time, platforms up to a gem
+      rect(20, 11, 32, 16, '#'); put(26, 10, 'J'); rect(30, 6, 30, 10, 'L');
+      put(22, 8, '==='); put(26, 6, '==='); put(27, 4, 'G'); put(23, 9, 'oo');
+      // Rooftop C — a breakable ceiling with a gem stashed above it
+      rect(36, 12, 50, 16, '#'); put(44, 9, '$$$$'); put(45, 8, 'G'); put(40, 11, 'E'); put(38, 9, 'oo'); put(49, 11, 'W');
+      // The lift: a vertical mover up to the tall building
+      rect(53, 5, 53, 11, ':'); put(53, 12, 'V');
+      // Rooftop D — high, with a beam lying across the roof
+      rect(56, 7, 66, 16, '#'); put(60, 6, 'llll'); put(58, 4, 'oo'); put(64, 4, 'oo');
+      // Rooftop E — checkpoint, hopper, heart
+      rect(70, 10, 84, 16, '#'); put(72, 9, 'C'); put(78, 9, 'J'); put(75, 6, '?@?'); put(82, 9, 'E');
+      // The long mover through a beam
+      put(86, 10, 'M'); put(87, 10, '--------------'); rect(93, 4, 93, 9, 'L');
+      // Rooftop F — spiker, magnet, a spring to the sky gem
+      rect(102, 10, 116, 16, '#'); put(108, 9, 'X'); put(104, 7, 'oo'); put(111, 9, 'N'); put(114, 10, '!'); put(114, 3, 'G');
+      // Rooftop G — two beam gates on opposite beats
+      rect(120, 12, 134, 16, '#'); rect(124, 10, 126, 11, 'L'); rect(129, 10, 131, 11, 'l'); put(121, 9, 'ooo'); put(133, 9, 'oo');
+      // Rooftop H — the flag
+      rect(138, 12, 149, 16, '#'); put(141, 11, 'E'); put(146, 11, 'F');
+    }),
+  },
 ];
 
 export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
@@ -318,7 +415,7 @@ export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
    open (jumping over the top of the screen is allowed, as it always was), and
    below is the pit. */
 
-const SOLID = new Set(['#', 'B', '?', '@', '|', '!']);
+const SOLID = new Set(['#', 'B', '?', '@', '|', '!', '$', 'D']);
 
 export function tileAt(lv, tx, ty) {
   if (tx < 0 || tx >= lv.w) return '#';
@@ -326,23 +423,47 @@ export function tileAt(lv, tx, ty) {
   return lv.grid[ty][tx];
 }
 
-export const solidAt = (lv, tx, ty) => SOLID.has(tileAt(lv, tx, ty));
+/** Solid, allowing for what the run has changed: smashed bricks are air,
+ *  and doors are air once the world is unlocked. */
+export function solidAt(lv, tx, ty) {
+  const ch = tileAt(lv, tx, ty);
+  if (!SOLID.has(ch)) return false;
+  if (ch === '$') return !lv.broken.has(tx + ',' + ty);
+  if (ch === 'D') return !lv.unlocked;
+  return true;
+}
 export const oneWayAt = (lv, tx, ty) => tileAt(lv, tx, ty) === '=';
 export const springAt = (lv, tx, ty) => tileAt(lv, tx, ty) === '!';
 export const blockAt = (lv, tx, ty) => { const ch = tileAt(lv, tx, ty); return ch === '?' || ch === '@'; };
+export const waterAt = (lv, tx, ty) => tileAt(lv, tx, ty) === 'w';
+export const updraftAt = (lv, tx, ty) => tileAt(lv, tx, ty) === 'u';
 
-/** 'deadly' hazards always kill; 'sharp' ones cost a shard first. */
-export const hazardAt = (lv, tx, ty) => {
+/* Lasers keep time on the shared clock: on for LASER_ON of every
+   LASER_PERIOD steps, with 'l' half a cycle behind 'L'. */
+export const LASER_PERIOD = 240;
+export const LASER_ON = 80;
+export const LASER_WARN = 30;           // steps of flicker before it fires
+
+/** Where in its cycle a beam is: 'on', 'warn', or 'off'. */
+export function laserPhase(ch, step) {
+  const t = ((step + (ch === 'l' ? LASER_PERIOD / 2 : 0)) % LASER_PERIOD + LASER_PERIOD) % LASER_PERIOD;
+  if (t < LASER_ON) return 'on';
+  if (t >= LASER_PERIOD - LASER_WARN) return 'warn';
+  return 'off';
+}
+
+/** 'deadly' hazards always kill; 'sharp' ones cost a shard first. With no
+ *  step given a laser counts as always on — that is how enemies see it. */
+export const hazardAt = (lv, tx, ty, step) => {
   const ch = tileAt(lv, tx, ty);
   if (ch === '~') return 'deadly';
   if (ch === '^') return 'sharp';
+  if (ch === 'L' || ch === 'l') return step === undefined || laserPhase(ch, step) === 'on' ? 'sharp' : null;
   return null;
 };
 
-export const updraftAt = (lv, tx, ty) => tileAt(lv, tx, ty) === 'u';
-
 export const PICKUPS = { Z: 'speed', W: 'ward', N: 'magnet' };
-export const ENEMY_GLYPHS = { E: 'walker', X: 'spiker', Y: 'flyer' };
+export const ENEMY_GLYPHS = { E: 'walker', X: 'spiker', Y: 'flyer', J: 'hopper' };
 
 /* ---- the clock-driven scenery ----
    Movers and wind are pure functions of the shared step count, so every
@@ -392,6 +513,12 @@ export function parseWorld(world) {
     pickups: [],       // { type, x, y, block } — block: the '@' this pops out of, else null
     enemies: [],
     movers: [],        // { x0, y0, x1, y1 } rail ends, in px (platform centre)
+    keys: [],
+    // What the run has done to the scenery. Mirrors of the host's record,
+    // kept here because collision has to see them.
+    cracked: new Set(),
+    broken: new Set(),
+    unlocked: false,
   };
 
   const centre = (tx, ty) => ({ x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2 });
@@ -422,10 +549,22 @@ export function parseWorld(world) {
       else if (ch === 'C') { lv.checkpoints.push(centre(tx, ty)); grid[ty][tx] = '.'; }
       else if (ch === 'o') { lv.coins.push(centre(tx, ty)); grid[ty][tx] = '.'; }
       else if (ch === 'G') { lv.gems.push(centre(tx, ty)); grid[ty][tx] = '.'; }
+      else if (ch === 'K') { lv.keys.push(centre(tx, ty)); grid[ty][tx] = '.'; }
       else if (PICKUPS[ch]) { lv.pickups.push({ type: PICKUPS[ch], ...centre(tx, ty), block: null }); grid[ty][tx] = '.'; }
       else if (ch === '@') { lv.pickups.push({ type: 'heart', ...centre(tx, ty - 1), block: tx + ',' + ty }); }
       else if (ENEMY_GLYPHS[ch]) { lv.enemies.push({ type: ENEMY_GLYPHS[ch], ...centre(tx, ty) }); grid[ty][tx] = '.'; }
       else if (ch === 'M' || ch === 'V' || ch === '-' || ch === ':') { grid[ty][tx] = '.'; }
+    }
+  }
+
+  // Entities drawn over a pool left holes in the water where they were
+  // lifted out; a cell that is mostly surrounded by water is water.
+  const snap = grid.map((row) => row.join(''));
+  for (let ty = 0; ty < h; ty++) {
+    for (let tx = 0; tx < w; tx++) {
+      if (snap[ty][tx] !== '.') continue;
+      const wet = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => snap[ty + dy]?.[tx + dx] === 'w').length;
+      if (wet >= 2) grid[ty][tx] = 'w';
     }
   }
 

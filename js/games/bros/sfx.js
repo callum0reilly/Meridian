@@ -94,6 +94,13 @@ export const sfx = {
   heart()      { [392, 523, 659, 784].forEach((f, i) => tone('triangle', f, f * 1.01, 0.12, 0.35, i * 0.08)); },
   buffEnd()    { tone('square', 784, 392, 0.2, 0.2); },
   oneUp()      { [659, 784, 1319, 1047, 1175, 1568].forEach((f, i) => tone('square', f, f, 0.1, 0.3, i * 0.08)); },
+  splash()     { noise(0.18, 0.28, 0, 2400); tone('sine', 420, 180, 0.2, 0.15); },
+  swim()       { noise(0.06, 0.1, 0, 1600); },
+  crack()      { noise(0.07, 0.25, 0, 1500); tone('square', 180, 140, 0.06, 0.2); },
+  smash()      { noise(0.22, 0.35, 0, 900); tone('square', 140, 60, 0.18, 0.3); },
+  key()        { [1047, 1319, 1568, 2093].forEach((f, i) => tone('triangle', f, f, 0.12, 0.3, i * 0.06)); },
+  unlock()     { tone('square', 196, 196, 0.15, 0.3); tone('square', 262, 262, 0.15, 0.3, 0.15); tone('square', 392, 392, 0.35, 0.3, 0.3); noise(0.3, 0.15, 0.3, 500); },
+  zap()        { tone('sawtooth', 900, 200, 0.18, 0.3); noise(0.08, 0.2, 0, 3000); },
   flag() {
     // Course clear: a rising fanfare with a held chord at the end.
     const m = [523, 523, 523, 659, 784, 1047];

@@ -25,14 +25,15 @@
 
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
-  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, MOVER_W, MOVER_H,
+  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, laserPhase,
+  MOVER_W, MOVER_H,
   STEP_MS, TICK_MS, TICK_HZ, MIN_PLAYERS, MAX_PLAYERS,
   CHARACTERS, CHAR_IDS, PLAYER_W, PLAYER_H, ENEMY,
   RESPAWN_STEPS, STOMP_BOUNCE, BUFF_STEPS,
   makeBody, stepPlayer, kill, hurt, respawn, eatPickup, hasBuff,
-  collectCoins, collectGems, collectPickups, touchCheckpoint, touchFlag,
+  collectCoins, collectGems, collectPickups, collectKeys, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
-  createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
+  createRun, applyCoin, applyBump, applyGem, applyPickup, applyKey, applyStomp, applyDeath, applyFlag,
   nextWorldId,
 } from './rules.js';
 import { sfx, unlock as unlockAudio, isMuted, setMuted } from './sfx.js';
@@ -153,6 +154,7 @@ function init(root, header) {
   let collected = null;    // Set of coin indexes (view + optimistic)
   let gems = null;         // Set of gem indexes
   let taken = null;        // Set of pickup indexes
+  let keysGot = null;      // Set of key indexes
   let used = null;         // Set of "tx,ty" spent ?/@ blocks (view + optimistic)
   let flagSent = false;
   let livesSeen = null;    // last lives count, to spot a 1-up in a room push
@@ -208,7 +210,7 @@ function init(root, header) {
     stopRender();
     room?.close();
     room = null; state = null; view = null; selfId = null;
-    lv = null; body = null; collected = null; gems = null; taken = null; used = null;
+    lv = null; body = null; collected = null; gems = null; taken = null; keysGot = null; used = null;
     ents = new Map(); foes = new Map(); fx = []; banner = null;
     keys.clear(); jumpQueued = false;
     leaveBtn.hidden = true;
@@ -384,6 +386,7 @@ function init(root, header) {
     if (msg.t === 'coin') { if (applyCoin(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'gem') { if (applyGem(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'pow') { if (applyPickup(run, seat, msg.i)) pushRoom(); return; }
+    if (msg.t === 'key') { if (applyKey(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'bump') { if (applyBump(run, seat, +msg.bx, +msg.by)) pushRoom(); return; }
     if (msg.t === 'stomp') { if (applyStomp(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'die') {
@@ -427,7 +430,11 @@ function init(root, header) {
         collected: [...run.collected],
         gems: [...run.gems],
         taken: [...run.taken],
+        keys: [...run.keys],
         used: [...run.used],
+        cracked: [...run.cracked],
+        broken: [...run.broken],
+        unlocked: run.lv.unlocked,
         deadEnemies: run.enemies.filter((e) => !e.alive).map((e) => e.i),
         clearBy: run.clearBy,
         lives: run.lives,
@@ -526,6 +533,21 @@ function init(root, header) {
       for (const i of view.run.collected) collected.add(i);
       for (const i of view.run.gems) gems.add(i);
       for (const i of view.run.taken) taken.add(i);
+      for (const i of view.run.keys) keysGot.add(i);
+      for (const key of view.run.cracked) lv.cracked.add(key);
+      for (const key of view.run.broken) {
+        if (!lv.broken.has(key)) {
+          lv.broken.add(key);
+          const [tx, ty] = key.split(',').map(Number);
+          addFx('rubble', tx * TILE + TILE / 2, ty * TILE + TILE / 2);
+        }
+      }
+      if (view.run.unlocked && !lv.unlocked) {
+        lv.unlocked = true;
+        say('The gate opens!');
+        sfx.unlock();
+        shake = 5;
+      }
       for (const key of view.run.used) {
         if (!used.has(key)) {
           used.add(key);
@@ -557,7 +579,11 @@ function init(root, header) {
     collected = new Set(view.run.collected);
     gems = new Set(view.run.gems);
     taken = new Set(view.run.taken);
+    keysGot = new Set(view.run.keys);
     used = new Set(view.run.used);
+    for (const key of view.run.cracked) lv.cracked.add(key);
+    for (const key of view.run.broken) lv.broken.add(key);
+    lv.unlocked = !!view.run.unlocked;
     flagSent = false;
     livesSeen = view.run.lives;
     checkpointAt = null;
@@ -666,20 +692,28 @@ function init(root, header) {
     clock += 1;
     const ev = stepPlayer(body, input, lv, clock);
 
-    if (ev.jumped) sfx.jump();
+    if (ev.jumped) { if (body.wet) sfx.swim(); else sfx.jump(); }
     if (ev.landed) { sfx.land(); addFx('dust', body.x, body.y + PLAYER_H / 2); }
     if (ev.spring) { sfx.spring(); addFx('dust', body.x, body.y + PLAYER_H / 2); }
+    if (ev.splash) { sfx.splash(); addFx('splash', body.x, body.y - PLAYER_H / 2); }
     if (hadBuff && !body.buff && !body.dead) sfx.buffEnd();
 
     if (ev.bump) {
       const key = ev.bump.tx + ',' + ev.bump.ty;
       const ch = tileAt(lv, ev.bump.tx, ev.bump.ty);
+      const cx = ev.bump.tx * TILE + TILE / 2, cy = ev.bump.ty * TILE;
       if ((ch === '?' || ch === '@') && !used.has(key)) {
         used.add(key);
-        addFx(ch === '@' ? 'heartpop' : 'coinpop', ev.bump.tx * TILE + TILE / 2, ev.bump.ty * TILE);
+        addFx(ch === '@' ? 'heartpop' : 'coinpop', cx, cy);
         intent({ t: 'bump', bx: ev.bump.tx, by: ev.bump.ty });
+        sfx.bump();
+      } else if (ch === '$' && !lv.broken.has(key)) {
+        if (lv.cracked.has(key)) { lv.broken.add(key); addFx('rubble', cx, cy + TILE / 2); sfx.smash(); shake = 4; }
+        else { lv.cracked.add(key); sfx.crack(); }
+        intent({ t: 'bump', bx: ev.bump.tx, by: ev.bump.ty });
+      } else {
+        sfx.bump();
       }
-      sfx.bump();
     }
 
     if (ev.hurt) { say('Lost your shard!'); sfx.hurt(); shake = 6; }
@@ -699,6 +733,13 @@ function init(root, header) {
         sfx.gem();
         say(`Gem ${gems.size} of ${lv.gems.length}!`);
         intent({ t: 'gem', i });
+      }
+      for (const i of collectKeys(body, lv, keysGot)) {
+        keysGot.add(i);
+        addFx('sparkle', lv.keys[i].x, lv.keys[i].y);
+        sfx.key();
+        say('Got the key!');
+        intent({ t: 'key', i });
       }
       for (const i of collectPickups(body, lv, taken, used)) {
         taken.add(i);
@@ -855,6 +896,8 @@ function init(root, header) {
       drawHero(body.x, body.y, body.face, Math.abs(body.vx) > 0.3, body.dead, view.seats[mySeat()], true, ts,
         { shard: body.hp > 1, buff: body.buff?.type, vx: body.vx });
     }
+    drawWater(ts, pal);
+    drawKeys(ts);
     drawFx(ts);
 
     ctx.restore();
@@ -908,6 +951,63 @@ function init(root, header) {
     ctx.stroke();
   }
 
+  /** Water goes on top of everything in it, so swimmers read as submerged. */
+  function drawWater(ts, pal) {
+    const tx0 = Math.max(0, Math.floor(cam / TILE) - 1);
+    const tx1 = Math.min(lv.w - 1, tx0 + Math.ceil(VIEW_W / TILE) + 2);
+    ctx.fillStyle = pal.water || 'rgba(52,152,219,0.45)';
+    for (let ty = 0; ty < lv.h; ty++) {
+      for (let tx = tx0; tx <= tx1; tx++) {
+        if (lv.grid[ty][tx] !== 'w') continue;
+        const x = tx * TILE, y = ty * TILE;
+        const surface = tileAt(lv, tx, ty - 1) !== 'w';
+        const wob = surface ? Math.sin(ts / 400 + tx * 0.8) * 2 : 0;
+        ctx.fillRect(x, y + wob, TILE, TILE - wob);
+        if (surface) {
+          ctx.fillStyle = pal.waterTop || 'rgba(200,240,255,0.7)';
+          ctx.fillRect(x, y + wob, TILE, 2);
+          ctx.fillStyle = pal.water || 'rgba(52,152,219,0.45)';
+        }
+      }
+    }
+    // A few bubbles drifting up through the visible water.
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    for (let i = 0; i < 14; i++) {
+      const tx = tx0 + ((i * 7) % Math.max(1, tx1 - tx0 + 1));
+      const col = lv.grid.map((r, ty) => (r[tx] === 'w' ? ty : -1)).filter((ty) => ty >= 0);
+      if (!col.length) continue;
+      const top = col[0] * TILE, bottom = (col[col.length - 1] + 1) * TILE;
+      const y = bottom - ((ts / 12 + i * 37) % (bottom - top));
+      ctx.beginPath();
+      ctx.arc(tx * TILE + 8 + (i % 3) * 8, y, 1.5 + (i % 2), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawKeys(ts) {
+    for (let i = 0; i < lv.keys.length; i++) {
+      if (keysGot.has(i)) continue;
+      const k = lv.keys[i];
+      const bob = Math.sin(ts / 350 + i) * 3;
+      ctx.save();
+      ctx.translate(k.x, k.y + bob);
+      ctx.rotate(-0.5);
+      ctx.fillStyle = 'rgba(255,210,62,0.25)';
+      ctx.beginPath();
+      ctx.arc(0, 0, 18, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffd23e';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath();
+      ctx.arc(-6, 0, 5, 0, Math.PI * 2);
+      ctx.moveTo(-1, 0); ctx.lineTo(12, 0);
+      ctx.moveTo(8, 0); ctx.lineTo(8, 5);
+      ctx.moveTo(12, 0); ctx.lineTo(12, 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   function drawMovers(ts, pal) {
     for (const m of lv.movers) {
       const p = moverPos(m, clock);
@@ -948,10 +1048,11 @@ function init(root, header) {
             ctx.fillStyle = pal.groundTop;
             ctx.fillRect(x, y, TILE, 7);
           }
-        } else if (ch === 'B') {
-          ctx.fillStyle = pal.brick;
+        } else if (ch === 'B' || ch === '$') {
+          if (ch === '$' && lv.broken.has(tx + ',' + ty)) continue;
+          ctx.fillStyle = ch === '$' ? '#b8865a' : pal.brick;
           ctx.fillRect(x, y, TILE, TILE);
-          ctx.strokeStyle = pal.brickDark;
+          ctx.strokeStyle = ch === '$' ? '#7a5636' : pal.brickDark;
           ctx.lineWidth = 2;
           ctx.strokeRect(x + 1, y + 1, TILE - 2, TILE - 2);
           ctx.beginPath();
@@ -960,6 +1061,49 @@ function init(root, header) {
           ctx.moveTo(x + TILE / 4, y + TILE / 2); ctx.lineTo(x + TILE / 4, y + TILE);
           ctx.moveTo(x + 3 * TILE / 4, y + TILE / 2); ctx.lineTo(x + 3 * TILE / 4, y + TILE);
           ctx.stroke();
+          if (ch === '$' && lv.cracked.has(tx + ',' + ty)) {
+            ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(x + 6, y + 3); ctx.lineTo(x + 14, y + 12); ctx.lineTo(x + 10, y + 20); ctx.lineTo(x + 19, y + 29);
+            ctx.moveTo(x + 14, y + 12); ctx.lineTo(x + 26, y + 9);
+            ctx.stroke();
+          }
+        } else if (ch === 'D') {
+          // An iron gate: bars while locked, an empty frame once open.
+          const open = lv.unlocked;
+          ctx.fillStyle = open ? 'rgba(0,0,0,0.18)' : '#2a2f3d';
+          ctx.fillRect(x + 2, y, TILE - 4, TILE);
+          if (!open) {
+            ctx.fillStyle = '#8f98ad';
+            for (let i = 0; i < 3; i++) ctx.fillRect(x + 6 + i * 9, y, 3, TILE);
+            ctx.fillRect(x + 2, y + TILE / 2 - 2, TILE - 4, 4);
+          } else {
+            ctx.strokeStyle = 'rgba(143,152,173,0.5)';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(x + 3, y + 1, TILE - 6, TILE - 2);
+          }
+        } else if (ch === 'L' || ch === 'l') {
+          const phase = laserPhase(ch, clock);
+          if (phase === 'off') {
+            ctx.fillStyle = 'rgba(255,59,107,0.12)';
+            ctx.fillRect(x + TILE / 2 - 1, y, 2, TILE);
+          } else if (phase === 'warn') {
+            if (Math.floor(ts / 60) % 2 === 0) {
+              ctx.fillStyle = 'rgba(255,59,107,0.45)';
+              ctx.fillRect(x + TILE / 2 - 1, y, 2, TILE);
+            }
+          } else {
+            const glow = pal.laserGlow || '#ff9ab5';
+            ctx.fillStyle = 'rgba(255,59,107,0.35)';
+            ctx.fillRect(x + 6, y, TILE - 12, TILE);
+            ctx.fillStyle = pal.laser || '#ff3b6b';
+            ctx.fillRect(x + 11, y, TILE - 22, TILE);
+            ctx.fillStyle = glow;
+            ctx.fillRect(x + TILE / 2 - 2, y, 4, TILE);
+            ctx.fillStyle = `rgba(255,255,255,${0.5 + 0.4 * Math.sin(ts / 30 + tx)})`;
+            ctx.fillRect(x + TILE / 2 - 1, y, 2, TILE);
+          }
         } else if (ch === '?' || ch === '@') {
           const spent = used.has(tx + ',' + ty);
           ctx.fillStyle = spent ? pal.blockDead : ch === '@' ? '#ff6b9a' : pal.block;
@@ -1191,6 +1335,52 @@ function init(root, header) {
       ctx.beginPath();
       ctx.arc(x + f.dir * 6.5, y - 4, 2, 0, Math.PI * 2);
       ctx.fill();
+    } else if (f.type === 'hopper') {
+      // A frog: a squat body on two springy legs that stretch on the way up.
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.beginPath();
+      ctx.ellipse(x, y + spec.h / 2 + 2, spec.w / 2, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      const stretch = Math.max(0, -(f.ty - f.fy)) * 0.6;
+      ctx.fillStyle = '#4d8f3a';
+      ctx.fillRect(x - 10, y + 4, 5, 8 + stretch);
+      ctx.fillRect(x + 5, y + 4, 5, 8 + stretch);
+      ctx.fillStyle = '#6cc04a';
+      ctx.beginPath();
+      ctx.ellipse(x, y + wob * 0.4, spec.w / 2, spec.h / 2 - 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x - 5, y - 8, 4, 0, Math.PI * 2);
+      ctx.arc(x + 5, y - 8, 4, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(x - 5 + f.dir * 1.5, y - 8, 2, 0, Math.PI * 2);
+      ctx.arc(x + 5 + f.dir * 1.5, y - 8, 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.type === 'flyer' && lv.world.creature === 'fish') {
+      const tail = Math.sin(ts / 90 + f.i) * 5;
+      ctx.fillStyle = '#ff9f43';
+      ctx.beginPath();
+      ctx.moveTo(x - f.dir * 10, y); ctx.lineTo(x - f.dir * 20, y - 7 + tail); ctx.lineTo(x - f.dir * 20, y + 7 + tail);
+      ctx.closePath();
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(x, y, 13, spec.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffd6a5';
+      ctx.beginPath();
+      ctx.ellipse(x, y + 3, 9, 4, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x + f.dir * 6, y - 2, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(x + f.dir * 7, y - 2, 1.6, 0, Math.PI * 2);
+      ctx.fill();
     } else if (f.type === 'flyer') {
       // A round bird-thing with flapping wings and a beak pointing its way.
       const flap = Math.sin(ts / 70 + f.i) * 7;
@@ -1399,6 +1589,22 @@ function init(root, header) {
           drawGem(f.x + Math.cos(a) * 34 * k, f.y + Math.sin(a) * 34 * k, 4, ts, i);
         }
         ctx.globalAlpha = 1;
+      } else if (f.type === 'rubble') {
+        ctx.globalAlpha = 1 - k;
+        ctx.fillStyle = '#b8865a';
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2 + 0.4;
+          const d = 8 + k * 30;
+          ctx.fillRect(f.x + Math.cos(a) * d - 3, f.y + Math.sin(a) * d * 0.6 + k * k * 40 - 3, 6, 6);
+        }
+        ctx.globalAlpha = 1;
+      } else if (f.type === 'splash') {
+        ctx.fillStyle = `rgba(200,240,255,${0.8 * (1 - k)})`;
+        for (let i = -2; i <= 2; i++) {
+          ctx.beginPath();
+          ctx.arc(f.x + i * 7 * (1 + k), f.y - Math.sin(k * Math.PI) * (14 - Math.abs(i) * 3), 2.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
   }
@@ -1457,6 +1663,26 @@ function init(root, header) {
         ctx.closePath();
         ctx.stroke();
       }
+    }
+
+    // the key, once the team has it
+    if (lv.keys.length) {
+      const x0 = 216 + lv.gems.length * 22 + 12;
+      ctx.fillStyle = 'rgba(10,14,24,0.55)';
+      ctx.beginPath();
+      ctx.roundRect(x0, 10, 36, 30, 8);
+      ctx.fill();
+      ctx.save();
+      ctx.translate(x0 + 18, 25);
+      ctx.rotate(-0.5);
+      ctx.strokeStyle = lv.unlocked ? '#ffd23e' : 'rgba(255,255,255,0.3)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(-5, 0, 4, 0, Math.PI * 2);
+      ctx.moveTo(-1, 0); ctx.lineTo(10, 0);
+      ctx.moveTo(7, 0); ctx.lineTo(7, 4);
+      ctx.stroke();
+      ctx.restore();
     }
 
     // the active buff, with a draining bar

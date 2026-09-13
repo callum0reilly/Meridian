@@ -11,8 +11,10 @@ import {
   collectCoins, collectGems, collectPickups, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
-  nextWorldId, moverPos, windAt,
+  nextWorldId, moverPos, windAt, laserPhase, LASER_PERIOD, LASER_ON,
+  applyKey,
 } from '../js/games/bros/rules.js';
+import { solidAt, hazardAt } from '../js/games/bros/levels.js';
 
 /* ---------------- helpers ---------------- */
 
@@ -89,7 +91,7 @@ test('every world parses with the essentials in place', () => {
     // an entity is embedded in rock — every lifted entity sits in air.
     for (const list of [lv.coins, lv.gems, lv.checkpoints, lv.enemies]) {
       for (const p of list) {
-        assert.equal(tileAt(lv, Math.floor(p.x / TILE), Math.floor(p.y / TILE)), '.', `${w.id}: entity at ${p.x},${p.y} sits in air`);
+        assert.ok('.w'.includes(tileAt(lv, Math.floor(p.x / TILE), Math.floor(p.y / TILE))), `${w.id}: entity at ${p.x},${p.y} sits in air or water`);
       }
     }
     // Spawn must be open air with ground beneath — a world that kills you on
@@ -115,6 +117,10 @@ test('dynamic entities are lifted out of the grid', () => {
   assert.equal(heart.block, `6,${ROWS - 8}`, 'the heart remembers its block');
   assert.equal(heart.y, (ROWS - 9) * TILE + TILE / 2, 'and pops out on top of it');
   assert.equal(tileAt(lv, 6, ROWS - 8), '@', 'the block itself stays solid in the grid');
+
+  const pool = parseWorld(ruinsWorld());
+  assert.equal(tileAt(pool, 10, ROWS - 3), 'w', 'the key\'s cell heals back to water');
+  assert.equal(pool.keys.length, 1);
 });
 
 test('the four heroes really differ, and all clear the tallest required jump', () => {
@@ -592,6 +598,125 @@ test('flyers bob and patrol on the clock, and can be stomped', () => {
   assert.equal(applyStomp(run, 0, flyer.i), true, 'stompable');
   const local = parseWorld(windyWorld());
   assert.equal(local.enemies.find((e) => e.type === 'flyer').y, (ROWS - 6) * TILE + TILE / 2, 'Y parses as a flyer');
+});
+
+/* ---------------- water, bricks, keys, lasers, hoppers ---------------- */
+
+function ruinsWorld() {
+  const r = (s) => s.padEnd(24, '.');
+  const map = Array.from({ length: ROWS }, () => r(''));
+  //   col: 012345678901234567890123
+  map[ROWS - 7] = r('...$$');                      // breakable bricks at 3–4
+  map[ROWS - 6] = r('........LL....l');            // lasers: L at 8–9, l at 14
+  map[ROWS - 5] = r('.................D');         // door column at 17, rows ROWS-5..ROWS-3
+  map[ROWS - 4] = r('.......wwwwww....D');         // water pool 7–12, rows ROWS-4..ROWS-2
+  map[ROWS - 3] = r('.S.....wwwKww....D..J');      // key at 10 (in water), hopper at 20
+  map[ROWS - 2] = r('#######wwwwww###########');
+  map[ROWS - 1] = r('########################');
+  return { id: 'ruinsy', name: 'Ruinsy', sub: '', ice: false, palette: {}, map };
+}
+
+test('water slows the fall, swimming kicks, and the surface gives a full jump', () => {
+  const lv = parseWorld(ruinsWorld());
+  const b = makeBody(lv, 'rex', 0);
+  b.x = 9 * TILE + TILE / 2; b.y = (ROWS - 4) * TILE - 4; b.onGround = false; b.vy = 10;
+  stepPlayer(b, IDLE, lv);                  // this step carries the body into the water
+  const ev = stepPlayer(b, IDLE, lv);       // and this one notices
+  assert.equal(ev.splash, true, 'entering water splashes');
+  assert.ok(b.vy <= 2.3, 'and kills the fall speed');
+  steps(b, IDLE, 20, lv);
+  assert.ok(b.y + PLAYER_H / 2 < (ROWS - 1) * TILE - 20, 'still sinking slowly, not on the floor yet');
+  const deep = { ...b };
+  stepPlayer(b, press({ jump: true, held: true }), lv);
+  assert.ok(b.vy < 0 && b.vy > -6, 'a kick underwater is a small rise');
+  void deep;
+  // Float up to the surface and jump out.
+  for (let i = 0; i < 200 && b.y > (ROWS - 4) * TILE + 4; i++) stepPlayer(b, press({ jump: i % 4 === 0, held: true }), lv);
+  b.y = (ROWS - 4) * TILE + TILE / 2;      // head just under the surface
+  stepPlayer(b, press({ jump: true, held: true }), lv);
+  assert.ok(b.vy < -9, 'a jump at the surface is a real jump');
+});
+
+test('bricks crack, then break, then are air — for physics and the referee', () => {
+  const lv = parseWorld(ruinsWorld());
+  const key = `3,${ROWS - 7}`;
+  const b = makeBody(lv, 'rex', 0);
+  b.x = 3 * TILE + TILE / 2; b.y = (ROWS - 6) * TILE + TILE / 2 + 4; b.onGround = false; b.vy = -8;
+  let bump = null;
+  for (let i = 0; i < 10 && !bump; i++) bump = stepPlayer(b, press({ held: true }), lv).bump;
+  assert.deepEqual(bump, { tx: 3, ty: ROWS - 7 }, 'head found the brick');
+
+  const run = { lv, cracked: lv.cracked, broken: lv.broken, used: new Set(), scores: [], coinsTotal: 0, lives: 3 };
+  assert.equal(applyBump(run, 0, 3, ROWS - 7), true);
+  assert.ok(lv.cracked.has(key) && !lv.broken.has(key), 'cracked after one hit');
+  assert.equal(applyBump(run, 0, 3, ROWS - 7), true);
+  assert.ok(lv.broken.has(key), 'smashed after two');
+  assert.equal(applyBump(run, 0, 3, ROWS - 7), false, 'nothing left to hit');
+
+  const c = makeBody(lv, 'rex', 0);
+  c.x = 3 * TILE + TILE / 2; c.y = (ROWS - 6) * TILE + TILE / 2 + 4; c.onGround = false; c.vy = -8;
+  let rose = false;
+  for (let i = 0; i < 10; i++) { stepPlayer(c, press({ held: true }), lv); if (c.y < (ROWS - 7) * TILE + 10) rose = true; }
+  assert.ok(rose, 'and the way through is open');
+});
+
+test('a key opens the door for the whole team', () => {
+  const run = createRun('ruins', 2);
+  assert.ok(run.lv.keys.length >= 1, 'the ruins have a key');
+  const doorTx = run.lv.grid.findIndex((r) => r.includes('D')) >= 0 ? run.lv.grid.find((r) => r.includes('D')).indexOf('D') : -1;
+  const doorTy = run.lv.grid.findIndex((r) => r.includes('D'));
+  assert.ok(doorTx >= 0, 'and a door');
+  assert.equal(solidAt(run.lv, doorTx, doorTy), true, 'shut to begin with');
+  assert.equal(applyKey(run, 1, 0), true);
+  assert.equal(applyKey(run, 0, 0), false, 'one key, one pickup');
+  assert.equal(run.lv.unlocked, true);
+  assert.equal(solidAt(run.lv, doorTx, doorTy), false, 'open for everyone');
+});
+
+test('lasers keep time: L and l alternate, and only hurt while on', () => {
+  const lv = parseWorld(ruinsWorld());
+  const L = { tx: 8, ty: ROWS - 6 }, l = { tx: 14, ty: ROWS - 6 };
+  let onL = 0, onl = 0, both = 0;
+  for (let s = 0; s < LASER_PERIOD; s++) {
+    const a = hazardAt(lv, L.tx, L.ty, s), b = hazardAt(lv, l.tx, l.ty, s);
+    if (a) onL++;
+    if (b) onl++;
+    if (a && b) both++;
+  }
+  assert.equal(onL, LASER_ON);
+  assert.equal(onl, LASER_ON);
+  assert.equal(both, 0, 'never both at once');
+  assert.equal(hazardAt(lv, L.tx, L.ty), 'sharp', 'with no clock a beam is always dangerous (enemies avoid it)');
+
+  const b = makeBody(lv, 'rex', 0);
+  b.x = 8 * TILE + TILE / 2; b.y = (ROWS - 6) * TILE + TILE / 2; b.onGround = false; b.vy = 0;
+  const offStep = LASER_ON + 5;
+  assert.equal(laserPhase('L', offStep), 'off');
+  const evOff = stepPlayer(b, IDLE, lv, offStep);
+  assert.equal(evOff.dead, null);
+  assert.equal(b.dead, false, 'off: harmless');
+  b.y = (ROWS - 6) * TILE + TILE / 2; b.vy = 0;
+  const evOn = stepPlayer(b, IDLE, lv, 2);
+  assert.equal(evOn.dead, 'hazard', 'on: deadly without a shard');
+});
+
+test('hoppers walk like walkers and leap on a beat', () => {
+  const lv = parseWorld(ruinsWorld());
+  const run = createRun('sprawl', 1);
+  const e = run.enemies.find((x) => x.type === 'hopper');
+  assert.ok(e, 'the sprawl has hoppers');
+  let airborne = 0, floorY = null;
+  for (let s = 1; s <= 400; s++) {
+    stepEnemy(e, run.lv, s);
+    if (floorY === null && e.vy === 0) floorY = e.y;
+    if (floorY !== null && e.y < floorY - 20) airborne++;
+  }
+  assert.ok(airborne > 20, 'spent real time in the air');
+  assert.equal(e.alive, true);
+  assert.equal(applyStomp(run, 0, e.i), true, 'stompable');
+  const local = parseWorld(ruinsWorld());
+  assert.equal(local.enemies.find((x) => x.type === 'hopper').x, 20 * TILE + TILE / 2, 'J parses as a hopper');
+  void lv;
 });
 
 test('the world tour advances and wraps', () => {

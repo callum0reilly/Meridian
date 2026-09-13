@@ -27,8 +27,8 @@
 
 import {
   TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld,
-  tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt, updraftAt,
-  moverPos, windAt, MOVER_W, MOVER_H,
+  tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt, updraftAt, waterAt,
+  moverPos, windAt, laserPhase, MOVER_W, MOVER_H, LASER_PERIOD, LASER_ON,
 } from './levels.js';
 
 export const STEP_MS = 1000 / 60;
@@ -83,8 +83,17 @@ export const UPDRAFT_LIFT = 1.0;        // per step, against gravity's 0.55
 export const UPDRAFT_MAX = -5;          // fastest rise in an updraft
 export const WIND_CAP = 1.5;            // how far past top speed a gust can push
 
+/* ---- water ---- */
+export const WATER_GRAVITY = 0.16;
+export const WATER_MAX_FALL = 2.2;
+export const SWIM_KICK = -4.2;          // a tap of jump underwater
+export const WATER_DRAG = 0.75;         // top speed scale while submerged
+
 /* re-exported so index.js has one import for game data */
-export { TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, MOVER_W, MOVER_H };
+export {
+  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, laserPhase,
+  MOVER_W, MOVER_H, LASER_PERIOD, LASER_ON,
+};
 
 /* ============================== the hero ============================== */
 
@@ -105,8 +114,13 @@ export function makeBody(lv, charId, seat) {
     buff: null,            // { type: 'speed'|'ward'|'magnet', t: steps left }
     launched: false,       // sprung: the jump-cut doesn't apply until the apex
     ride: -1,              // index of the mover underfoot, if any
+    wet: false,            // submerged last step
   };
 }
+
+const inWater = (b, lv) => waterAt(lv, Math.floor(b.x / TILE), Math.floor(b.y / TILE));
+/** Head at the surface: swimming, but the tile above the head is not water. */
+const atSurface = (b, lv) => !waterAt(lv, Math.floor(b.x / TILE), Math.floor((b.y - PLAYER_H / 2 - 6) / TILE));
 
 export const hasBuff = (b, type) => !!(b.buff && b.buff.type === type && b.buff.t > 0);
 
@@ -117,11 +131,11 @@ export const hasBuff = (b, type) => !!(b.buff && b.buff.type === type && b.buff.
  *   (edge), `held` is the key still being down; the difference is what makes
  *   tapping hop and holding soar.
  * @param step  the shared clock, for movers and wind (0 if the world has none)
- * @returns {{bump, dead, landed, jumped, spring, hurt}} — `hurt` is a shard
- *   lost to spikes; `dead` is 'hazard' | 'pit' | null.
+ * @returns {{bump, dead, landed, jumped, spring, hurt, splash}} — `hurt` is a
+ *   shard lost to spikes; `dead` is 'hazard' | 'pit' | null.
  */
 export function stepPlayer(b, input, lv, step = 0) {
-  const ev = { bump: null, dead: null, landed: false, jumped: false, spring: false, hurt: false };
+  const ev = { bump: null, dead: null, landed: false, jumped: false, spring: false, hurt: false, splash: false };
   const ch = CHARACTERS[b.charId] || CHARACTERS.rex;
 
   if (b.dead) {
@@ -144,9 +158,13 @@ export function stepPlayer(b, input, lv, step = 0) {
     b.y += now.y - was.y;
   }
 
+  const wet = inWater(b, lv);
+  if (wet && !b.wet) { ev.splash = true; b.vy = Math.min(b.vy, WATER_MAX_FALL); b.launched = false; }
+  b.wet = wet;
+
   const surge = hasBuff(b, 'speed');
-  const speed = ch.speed * (surge ? SPEED_MULT : 1);
-  const accel = ch.accel * (surge ? 1.3 : 1);
+  const speed = ch.speed * (surge ? SPEED_MULT : 1) * (wet ? WATER_DRAG : 1);
+  const accel = ch.accel * (surge ? 1.3 : 1) * (wet ? 0.6 : 1);
 
   const ice = !!lv.world.ice;
   const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
@@ -174,7 +192,14 @@ export function stepPlayer(b, input, lv, step = 0) {
   // few steps early or leaving the ledge a few steps ago both still count.
   b.coyote = b.onGround ? COYOTE : Math.max(0, b.coyote - 1);
   b.jbuf = input.jump ? JUMP_BUFFER : Math.max(0, b.jbuf - 1);
-  if (b.jbuf > 0 && b.coyote > 0) {
+  if (wet && input.jump) {
+    // Swimming: every tap is a kick; at the surface it's a real jump out.
+    b.vy = atSurface(b, lv) ? -ch.jump : SWIM_KICK;
+    b.coyote = 0;
+    b.jbuf = 0;
+    b.onGround = false;
+    ev.jumped = true;
+  } else if (b.jbuf > 0 && b.coyote > 0) {
     b.vy = -ch.jump;
     b.coyote = 0;
     b.jbuf = 0;
@@ -183,7 +208,7 @@ export function stepPlayer(b, input, lv, step = 0) {
     ev.jumped = true;
   }
   if (b.launched && b.vy >= 0) b.launched = false;
-  if (!input.held && !b.launched && b.vy < JUMP_CUT) b.vy = JUMP_CUT;
+  if (!input.held && !b.launched && !wet && b.vy < JUMP_CUT) b.vy = JUMP_CUT;
 
   // Down through a one-way platform (or off a mover), on request.
   if (input.down && b.onGround && (b.ride >= 0 || standingOnOneWay(b, lv))) {
@@ -193,8 +218,8 @@ export function stepPlayer(b, input, lv, step = 0) {
   }
   if (b.dropT > 0) b.dropT -= 1;
 
-  const grav = ch.floaty && b.vy > 0 ? FLOAT_GRAVITY : GRAVITY;
-  b.vy = Math.min(b.vy + grav, MAX_FALL);
+  const grav = wet ? WATER_GRAVITY : ch.floaty && b.vy > 0 ? FLOAT_GRAVITY : GRAVITY;
+  b.vy = Math.min(b.vy + grav, wet ? WATER_MAX_FALL : MAX_FALL);
   if (updraftAt(lv, Math.floor(b.x / TILE), Math.floor(b.y / TILE))) {
     b.vy = Math.max(b.vy - UPDRAFT_LIFT, UPDRAFT_MAX);
     b.launched = false;
@@ -232,7 +257,7 @@ export function stepPlayer(b, input, lv, step = 0) {
     ev.spring = true;
   }
 
-  const hazard = touchesHazard(b, lv);
+  const hazard = touchesHazard(b, lv, step);
   if (hazard === 'deadly') {
     kill(b);
     ev.dead = 'hazard';
@@ -387,7 +412,7 @@ function standingOnSpring(b, lv) {
 
 /** Hazards test a shrunk box: brushing the tile a spike lives in shouldn't
  *  kill, standing among the points should. Returns the worst kind touched. */
-function touchesHazard(b, lv) {
+function touchesHazard(b, lv, step) {
   const tx0 = Math.floor((b.x - HW + 5) / TILE);
   const tx1 = Math.floor((b.x + HW - 5) / TILE);
   const ty0 = Math.floor((b.y - HH + 4) / TILE);
@@ -395,7 +420,7 @@ function touchesHazard(b, lv) {
   let worst = null;
   for (let ty = ty0; ty <= ty1; ty++) {
     for (let tx = tx0; tx <= tx1; tx++) {
-      const h = hazardAt(lv, tx, ty);
+      const h = hazardAt(lv, tx, ty, step);
       if (h === 'deadly') return h;
       if (h) worst = h;
     }
@@ -442,6 +467,15 @@ export function collectPickups(b, lv, taken, used) {
   return got;
 }
 
+export function collectKeys(b, lv, taken) {
+  if (b.dead) return [];
+  const got = [];
+  for (let i = 0; i < lv.keys.length; i++) {
+    if (!taken.has(i) && near(b, lv.keys[i], 24, 26)) got.push(i);
+  }
+  return got;
+}
+
 export function touchCheckpoint(b, lv) {
   if (b.dead) return null;
   for (const cp of lv.checkpoints) {
@@ -461,6 +495,7 @@ export const ENEMY = {
   walker: { w: 26, h: 22, speed: 0.8,  stomp: true },
   spiker: { w: 26, h: 20, speed: 0.55, stomp: false },
   flyer:  { w: 26, h: 18, speed: 1.0,  stomp: true, range: TILE * 4, bob: 18 },
+  hopper: { w: 24, h: 24, speed: 0.7,  stomp: true, hopEvery: 80, hop: -7.5 },
 };
 
 export function makeEnemies(lv) {
@@ -510,6 +545,10 @@ export function stepEnemy(e, lv, step = 0) {
     e.x += spec.speed * e.dir;
     if (e.x < hw) { e.x = hw; e.dir = 1; }
     if (e.x > lv.w * TILE - hw) { e.x = lv.w * TILE - hw; e.dir = -1; }
+
+    // Hoppers leap straight up on a beat, staggered by index so a row of them
+    // doesn't move as one.
+    if (spec.hopEvery && (step + e.i * 17) % spec.hopEvery === 0) e.vy = spec.hop;
   }
 
   if (e.y > (lv.h + 3) * TILE) e.alive = false;   // fell out somehow; tidy up
@@ -547,7 +586,10 @@ export function createRun(worldId, seatCount) {
     collected: new Set(),        // coin indexes
     gems: new Set(),             // gem indexes
     taken: new Set(),            // pickup indexes
+    keys: new Set(),             // key indexes
     used: new Set(),             // "tx,ty" of spent ?/@ blocks
+    cracked: lv.cracked,         // "tx,ty" of bricks hit once — shared with lv
+    broken: lv.broken,           //   … and twice, so collision sees it too
     scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0, g: 0 })),
     lives: world.lives ?? DEFAULT_LIVES,
     coinsTotal: 0,
@@ -580,11 +622,27 @@ export function applyCoin(run, seat, i) {
 }
 
 export function applyBump(run, seat, tx, ty) {
-  if (!blockAt(run.lv, tx, ty)) return false;
   const key = tx + ',' + ty;
+  const ch = tileAt(run.lv, tx, ty);
+  if (ch === '$') {
+    if (run.broken.has(key)) return false;
+    if (run.cracked.has(key)) run.broken.add(key);
+    else run.cracked.add(key);
+    return true;
+  }
+  if (!blockAt(run.lv, tx, ty)) return false;
   if (run.used.has(key)) return false;
   run.used.add(key);
-  if (tileAt(run.lv, tx, ty) === '?') bankCoin(run, seat);
+  if (ch === '?') bankCoin(run, seat);
+  return true;
+}
+
+/** One key opens every door in the world, for everyone. */
+export function applyKey(run, seat, i) {
+  if (!Number.isInteger(i) || i < 0 || i >= run.lv.keys.length) return false;
+  if (run.keys.has(i)) return false;
+  run.keys.add(i);
+  run.lv.unlocked = true;
   return true;
 }
 

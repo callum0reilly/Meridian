@@ -1,0 +1,206 @@
+/* Chess — board + side panel. Scoped to #panel-chess. Tokens from css/app.css.
+   The lobby and waiting room come from app.css; only the extra button differs. */
+
+/* NB: never set `display` on #panel-chess — see the note in meridian.css. */
+
+#panel-chess .lobby-card .create { margin-top: 8px; }
+
+/* ---- colour chips ---- */
+#panel-chess .chip {
+  width: 16px; height: 16px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+#panel-chess .chip.w { background: #f7f5ef; border-color: #f7f5ef; }
+#panel-chess .chip.b { background: #1d2331; }
+#panel-chess .chip.draw { background: linear-gradient(90deg, #f7f5ef 50%, #1d2331 50%); }
+
+/* ---- table ---- */
+#panel-chess .table { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+#panel-chess .boardwrap {
+  flex: 1; min-width: 0; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 20px; overflow: auto;
+  background: radial-gradient(ellipse at 50% 40%, #1a2336 0%, #131a29 60%, #0e1420 100%);
+}
+
+#panel-chess .banner {
+  flex: none; padding: 9px 16px; border-radius: 8px;
+  background: rgba(255,138,138,.12); border: 1px solid var(--danger);
+  color: var(--danger); font-size: 13px;
+}
+#panel-chess .banner[hidden] { display: none; }
+
+#panel-chess .status {
+  flex: none; min-height: 20px;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+  color: rgba(255,255,255,.5);
+}
+
+/* ---- the board ----
+   Sized off whichever axis is tighter, so it is always square and always fits
+   without scrolling. 170px is the header, the padding and the status line. */
+#panel-chess .board {
+  flex: none;
+  width: min(calc(100vh - 170px), 100%, 640px);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template: repeat(8, 1fr) / repeat(8, 1fr);
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line), 0 18px 50px rgba(0,0,0,.45);
+  /* Dragging a piece must not scroll the page or select text on the way. */
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+
+#panel-chess .sq {
+  position: relative; padding: 0; margin: 0;
+  width: 100%; height: 100%; min-width: 0; min-height: 0;
+  border: none; border-radius: 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: default;
+}
+#panel-chess .sq.light { background: #dde4ee; }
+#panel-chess .sq.dark { background: #7087ab; }
+#panel-chess .sq.movable { cursor: grab; }
+#panel-chess .sq.target, #panel-chess .sq.capture { cursor: pointer; }
+#panel-chess .sq:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; z-index: 2; }
+
+/* Square tints sit on ::before, under the piece. Later rules win when a square
+   is several things at once: selected beats last move. */
+#panel-chess .sq::before { content: ''; position: absolute; inset: 0; pointer-events: none; }
+#panel-chess .sq.last::before { background: rgba(255, 196, 60, .4); }
+#panel-chess .sq.selected::before { background: rgba(74, 158, 255, .55); }
+#panel-chess .sq.check::before {
+  background: radial-gradient(circle, rgba(255,60,60,.95) 0%, rgba(255,60,60,.5) 45%, transparent 72%);
+}
+
+/* Move hints on ::after, over the piece: a dot for a quiet move, a ring round
+   the piece for a capture. */
+#panel-chess .sq::after { content: ''; position: absolute; pointer-events: none; z-index: 1; border-radius: 50%; }
+#panel-chess .sq.target::after { width: 30%; height: 30%; background: rgba(12,18,30,.3); }
+#panel-chess .sq.capture::after { inset: 3%; box-shadow: inset 0 0 0 6px rgba(12,18,30,.3); }
+#panel-chess .sq.target:hover::after { background: rgba(12,18,30,.5); }
+#panel-chess .sq.capture:hover::after { box-shadow: inset 0 0 0 6px rgba(12,18,30,.5); }
+
+#panel-chess .coord {
+  position: absolute; z-index: 1; pointer-events: none;
+  font-size: clamp(9px, 1.4vmin, 12px); font-weight: 700; line-height: 1;
+}
+#panel-chess .coord.rank { top: 5%; left: 6%; }
+#panel-chess .coord.file { bottom: 5%; right: 7%; }
+#panel-chess .sq.light .coord { color: #7087ab; }
+#panel-chess .sq.dark .coord { color: #dde4ee; }
+
+/* ---- pieces ---- */
+#panel-chess .pc {
+  position: relative; width: 88%; height: 88%;
+  display: flex; pointer-events: none;
+}
+#panel-chess .sq.lifted .pc { opacity: .3; }
+#panel-chess .piece { width: 100%; height: 100%; overflow: visible; stroke-width: 3.5; stroke-linejoin: round; stroke-linecap: round; }
+#panel-chess .piece.w { fill: #f7f5ef; stroke: #141922; }
+#panel-chess .piece.b { fill: #1d2331; stroke: #080a0f; }
+#panel-chess .piece .d { fill: none; }
+#panel-chess .piece.w .d { stroke: #141922; }
+#panel-chess .piece.b .d { stroke: #c9d1de; }
+#panel-chess .piece .eye { stroke: none; }
+#panel-chess .piece.w .eye { fill: #141922; }
+#panel-chess .piece.b .eye { fill: #c9d1de; }
+
+/* The piece under your pointer while dragging. Fixed to the viewport and
+   moved by transform, so it never reflows anything. */
+#panel-chess .dragpiece {
+  position: fixed; left: 0; top: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; will-change: transform;
+  filter: drop-shadow(0 8px 10px rgba(0,0,0,.45));
+}
+
+/* ---- side panel ---- */
+#panel-chess aside {
+  width: 300px; flex: none; background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+}
+#panel-chess .turnbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+}
+#panel-chess .turnbar .who { flex: 1; font-weight: 600; }
+#panel-chess .turnbar .sub { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+#panel-chess .offer {
+  margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--accent); background: rgba(74,158,255,.1); font-size: 13px;
+}
+#panel-chess .offer[hidden] { display: none; }
+#panel-chess .offer .row { margin-top: 8px; }
+#panel-chess .offer .row button { flex: 1; padding: 7px; font-size: 13px; }
+
+#panel-chess .actions { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+#panel-chess .actions:empty { display: none; }
+#panel-chess .actions button { flex: 1; padding: 8px; font-size: 13px; }
+#panel-chess .actions .hint { flex: 1; margin: 0; }
+
+#panel-chess .scorehead, #panel-chess .movehead {
+  padding: 12px 14px 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--muted);
+}
+#panel-chess .scores { list-style: none; margin: 0; padding: 0 14px; flex: none; }
+#panel-chess .scores li {
+  display: flex; align-items: center; gap: 9px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); font-size: 13px;
+}
+#panel-chess .scores li.gone { opacity: .45; }
+#panel-chess .scores .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel-chess .scores .you { color: var(--muted); font-size: 11px; }
+#panel-chess .scores .pts { font-weight: 700; font-variant-numeric: tabular-nums; }
+#panel-chess .scores .drawrow { color: var(--muted); border-bottom: none; }
+#panel-chess .scores .drawrow .pts { font-weight: 500; }
+
+#panel-chess .moves {
+  flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 0 14px 14px;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+#panel-chess .moves li {
+  display: grid; grid-template-columns: 36px 1fr 1fr;
+  padding: 4px 0; border-bottom: 1px solid var(--line);
+}
+#panel-chess .moves .no { color: var(--muted); }
+#panel-chess .moves li:last-child:not(.res) span:last-child:empty::after { content: '…'; color: var(--muted); }
+#panel-chess .moves .res, #panel-chess .moves .none {
+  display: block; text-align: center; color: var(--muted); border-bottom: none; padding-top: 8px;
+}
+#panel-chess .moves .res { font-weight: 700; color: var(--text); }
+
+/* ---- result + promotion overlays ---- */
+#panel-chess .over, #panel-chess .promo {
+  position: absolute; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8,12,20,.72); backdrop-filter: blur(3px);
+}
+#panel-chess .card2 {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 24px 26px; text-align: center; width: min(400px, calc(100% - 32px));
+  max-height: calc(100% - 32px); overflow-y: auto;
+}
+#panel-chess .card2 h2 { margin: 0 0 6px; font-size: 22px; }
+#panel-chess .card2 .score { color: var(--muted); font-weight: 700; letter-spacing: .08em; margin-bottom: 4px; }
+#panel-chess .card2 .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+#panel-chess .card2 > button { width: 100%; padding: 11px; }
+#panel-chess .card2 > button + button, #panel-chess .card2 .hint + button { margin-top: 8px; }
+
+#panel-chess .promorow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 14px 0; }
+#panel-chess .promopick { aspect-ratio: 1; padding: 10%; background: #dde4ee; border-color: #dde4ee; }
+#panel-chess .promopick:hover, #panel-chess .promopick:focus-visible { background: #fff; border-color: var(--accent); outline: none; }
+
+@media (max-width: 820px) {
+  #panel-chess .table { flex-direction: column; }
+  #panel-chess .boardwrap { padding: 12px; gap: 10px; }
+  #panel-chess .board { width: min(94vw, 58vh); }
+  #panel-chess aside {
+    width: 100%; border-left: none; border-top: 1px solid var(--line);
+    max-height: 38%; overflow-y: auto;
+  }
+  #panel-chess .movehead, #panel-chess .moves { display: none; }
+}

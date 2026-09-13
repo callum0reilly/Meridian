@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chess harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/chess.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 760px; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-width: 0; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-chess { flex: 1; min-height: 0; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  #results div { padding: 2px 0; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="rig">
+  <div class="seatbox"><h3>Host (created the room)</h3><div class="hdr" id="hdrA"></div><div id="panel-chess" class="panel" data-who="A"></div></div>
+  <div class="seatbox"><h3>Joiner (entered the code)</h3><div class="hdr" id="hdrB"></div><div id="panel-chess" class="panel" data-who="B"></div></div>
+</div>
+<div class="rig">
+  <div class="seatbox"><h3>Same device</h3><div class="hdr" id="hdrL"></div><div id="panel-chess" class="panel" data-who="L"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+import { install } from './fake-peer.js';
+install();                                  // must land before any room is made
+const chess = (await import('../js/games/chess/index.js')).default;
+const { squareIndex } = await import('../js/games/chess/rules.js');
+
+// Resign, draw and leave all ask first. Say yes to all of it.
+window.confirm = () => true;
+
+const out = document.getElementById('results');
+let failed = 0;
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const check = (cond, msg) => {
+  if (!cond) failed++;
+  say((cond ? 'PASS  ' : 'FAIL  ') + msg, cond ? 'ok' : 'bad');
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+const L = document.querySelector('[data-who="L"]');
+chess.init(A, document.getElementById('hdrA'));
+chess.init(B, document.getElementById('hdrB'));
+chess.init(L, document.getElementById('hdrL'));
+
+const $ = (root, sel) => root.querySelector(sel);
+const $$ = (root, sel) => [...root.querySelectorAll(sel)];
+const sq = (root, name) => $(root, `.sq[data-i="${squareIndex(name)}"]`);
+
+/** What each square shows, as FEN letters and dots, a8 first. */
+const boardOf = (root) => $$(root, '.sq').map((s) => s.dataset.face || '.').join('');
+const at = (root, name) => sq(root, name).dataset.face || '';
+
+/** Click-to-move: the path the keyboard uses (a click with detail 0). */
+async function move(root, from, to, others) {
+  const before = boardOf(root);
+  sq(root, from).click();
+  check(sq(root, from).classList.contains('selected'), `${from} is picked up`);
+  sq(root, to).click();
+  await waitFor(() => [root, ...others].every((p) => boardOf(p) !== before), `${from}-${to} to land`);
+}
+
+/** Drag-to-move, with real pointer events and coordinates. */
+async function dragMove(root, from, to, others) {
+  const before = boardOf(root);
+  const a = sq(root, from).getBoundingClientRect();
+  const b = sq(root, to).getBoundingClientRect();
+  const ev = (type, x, y, target) => target.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, clientX: x, clientY: y,
+  }));
+  ev('pointerdown', a.x + a.width / 2, a.y + a.height / 2, sq(root, from));
+  ev('pointermove', a.x + a.width / 2 + 20, a.y + a.height / 2 + 20, window);
+  check(!!$(root, '.dragpiece'), `dragging ${from} shows the piece under the pointer`);
+  ev('pointermove', b.x + b.width / 2, b.y + b.height / 2, window);
+  ev('pointerup', b.x + b.width / 2, b.y + b.height / 2, window);
+  check(!$(root, '.dragpiece'), 'the dragged piece is gone once dropped');
+  await waitFor(() => [root, ...others].every((p) => boardOf(p) !== before), `${from}-${to} drag to land`);
+}
+
+try {
+  /* ================= online: create + join ================= */
+  $(A, '.name').value = 'Callum';
+  $(A, '.create').click();
+  await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+  const code = $(A, '.codeval').textContent;
+  check(/^[A-Z0-9]{5}$/.test(code), `host created a room: ${code}`);
+  check($(A, '.start').disabled, 'start is disabled with one player');
+
+  $(B, '.name').value = 'Mate';
+  $(B, '.codein').value = code;
+  $(B, '.join').click();
+  await waitFor(() => $(A, '.seats')?.children.length === 2, 'both in the lobby');
+  check(!$(A, '.start').disabled, 'start is enabled at two players');
+  check($(B, '.start').hidden, 'only the host can start');
+
+  $(A, '.start').click();
+  await waitFor(() => [A, B].every((p) => $$(p, '.sq').length === 64), 'both boards');
+
+  const START = 'rnbqkbnrpppppppp................................PPPPPPPPRNBQKBNR';
+  check([A, B].every((p) => boardOf(p) === START), 'both boards show the start position');
+
+  const aWhite = $(A, '.turnwho').textContent.includes('you are White');
+  let W = aWhite ? A : B;
+  let K = aWhite ? B : A;   // blacK
+  check($(K, '.turnwho').textContent.includes('you are Black'), 'the other player is Black');
+
+  // ---- orientation ----
+  check(sq(W, 'a1').style.gridRow === '8' && sq(W, 'a1').style.gridColumn === '1', 'White sees a1 bottom-left');
+  check(sq(K, 'a1').style.gridRow === '1' && sq(K, 'a1').style.gridColumn === '8', 'Black sees the board from their side');
+  check(sq(W, 'a1').querySelector('.rank').textContent === '1' && sq(W, 'a1').querySelector('.file').textContent === 'a',
+    'coordinates are drawn along White\'s edges');
+  check(sq(K, 'h8').querySelector('.rank').textContent === '8' && sq(K, 'h8').querySelector('.file').textContent === 'h',
+    'and along Black\'s edges on the flipped board');
+
+  // ---- turn ownership ----
+  check($$(W, '.sq.movable').length === 16, 'White can pick up any of their pieces');
+  check($$(K, '.sq.movable').length === 0, 'Black cannot touch anything yet');
+  sq(K, 'e7').click();
+  check(!sq(K, 'e7').classList.contains('selected'), 'clicking out of turn picks nothing up');
+
+  // ---- legal move hints ----
+  sq(W, 'g1').click();
+  const hinted = $$(W, '.sq.target').map((s) => s.getAttribute('aria-label').split(',')[0]).sort().join(',');
+  check(hinted === 'f3,h3', `the knight shows its two moves (${hinted})`);
+  sq(W, 'g1').click();
+  check($$(W, '.sq.target').length === 0, 'clicking the piece again puts it down');
+
+  // ---- fool's mate: click, then drag ----
+  await move(W, 'f2', 'f3', [K]);
+  check(at(K, 'f3') === 'P' && at(K, 'f2') === '', 'the move reached the other screen');
+  check(sq(K, 'f2').classList.contains('last') && sq(K, 'f3').classList.contains('last'), 'the last move is highlighted');
+  check($$(W, '.sq.movable').length === 0 && $$(K, '.sq.movable').length === 16, 'the turn passed');
+
+  await dragMove(K, 'e7', 'e5', [W]);
+  check(at(W, 'e5') === 'p', 'a dragged move lands too');
+  await move(W, 'g2', 'g4', [K]);
+  await move(K, 'd8', 'h4', [W]);
+
+  await waitFor(() => [A, B].every((p) => $(p, '.over')), 'the result card');
+  check($(W, '.over h2').textContent === `${aWhite ? 'Mate' : 'Callum'} wins`, 'the card names Black as the winner');
+  check($(W, '.over').textContent.includes('Checkmate'), 'and says how');
+  check($(W, '.over .score').textContent === '0–1', 'with the score line');
+  check([A, B].every((p) => sq(p, 'e1').classList.contains('check')), 'the mated king is marked');
+  check($$(W, '.moves li').at(-2).textContent.includes('Qh4#'), 'the move list has the mate in SAN');
+  check($(A, '.go') && !$(B, '.go'), 'only the host can start a rematch');
+  check($$(K, '.sq.movable').length === 0, 'a finished board is inert');
+
+  $(B, '.peek').click();
+  check(!$(B, '.over'), '"See the board" hides the card');
+
+  // ---- rematch swaps colours ----
+  $(A, '.go').click();
+  await waitFor(() => [A, B].every((p) => boardOf(p) === START && !$(p, '.over')), 'a fresh board');
+  [W, K] = [K, W];
+  check($(W, '.turnwho').textContent.includes('you are White'), 'colours swapped for the rematch');
+  check(sq(W, 'a1').style.gridRow === '8', 'and the boards turned round with them');
+  check($$(W, '.scores .pts').map((p) => p.textContent).join(',') !== '0,0,0', 'the score carried over');
+
+  // ---- draw offer ----
+  $(W, '.drawbtn').click();
+  await waitFor(() => !$(K, '.offer').hidden, 'the offer to arrive');
+  check($(W, '.drawbtn').disabled && $(W, '.drawbtn').textContent === 'Draw offered', 'the offerer sees it pending');
+  check($(W, '.offer').hidden, 'the offerer is not asked to answer their own offer');
+  $(K, '.declinedraw').click();
+  await waitFor(() => $(K, '.offer').hidden && !$(W, '.drawbtn').disabled, 'the decline');
+  check(true, 'declining clears the offer on both screens');
+
+  $(K, '.drawbtn').click();
+  await waitFor(() => !$(W, '.offer').hidden, 'the second offer');
+  $(W, '.acceptdraw').click();
+  await waitFor(() => [A, B].every((p) => $(p, '.over')), 'the drawn result');
+  check($(A, '.over h2').textContent === 'Draw' && $(A, '.over .score').textContent === '½–½', 'an accepted offer draws');
+  check($(A, '.drawrow .pts').textContent === '1', 'the draw is counted');
+
+  // ---- resignation ----
+  $(A, '.go').click();
+  await waitFor(() => [A, B].every((p) => boardOf(p) === START && !$(p, '.over')), 'game 3');
+  [W, K] = [K, W];
+  $(K, '.resignbtn').click();   // out of turn is fine
+  await waitFor(() => [A, B].every((p) => $(p, '.over')), 'the resignation');
+  check($(W, '.over').textContent.includes('resigned'), 'resigning ends it, even when not your turn');
+  check($(W, '.over .score').textContent === '1–0', 'and White takes it');
+
+  check(boardOf(A) === boardOf(B), 'host and joiner render the same board');
+
+  // ---- disconnect ----
+  $(A, '.go').click();
+  await waitFor(() => [A, B].every((p) => !$(p, '.over')), 'game 4');
+  document.querySelector('#hdrB .leave').click();
+  await waitFor(() => !$(A, '.banner').hidden, 'the disconnect banner');
+  check($(A, '.banner').textContent.includes('Mate disconnected'), 'the host is told the joiner left');
+  check($$(A, '.sq.movable').length === 0, 'and the board freezes');
+  check(!!$(B, '.lobby .create'), 'the joiner is back in the lobby');
+
+  /* ================= same device ================= */
+  $(L, '.local').click();
+  await waitFor(() => $$(L, '.sq').length === 64, 'the local board');
+  check(boardOf(L) === START, 'a local game starts at once, no room');
+  check(document.querySelector('#hdrL .leave').textContent === 'End game', 'the header offers to end the game');
+  check($(L, '.status').textContent === 'White to move', 'White is to move');
+  check($$(L, '.sq.movable').length === 16, 'White\'s pieces can move');
+
+  // Race a pawn to promotion: a4 b5 axb5 a6 bxa6 Bb7 axb7 Nc6 bxa8=Q
+  const race = [['a2', 'a4'], ['b7', 'b5'], ['a4', 'b5'], ['a7', 'a6'], ['b5', 'a6'],
+                ['c8', 'b7'], ['a6', 'b7'], ['b8', 'c6']];
+  for (const [i, [from, to]] of race.entries()) {
+    await move(L, from, to, []);
+    if (i === 0) {
+      check($(L, '.status').textContent === 'Black to move', 'then Black moves on the same screen');
+      check($$(L, '.sq.movable').length === 16, 'with Black\'s pieces now live');
+      check(sq(L, 'a1').style.gridRow === '8', 'and the board does not flip');
+    }
+  }
+  sq(L, 'b7').click();
+  sq(L, 'a8').click();
+  await waitFor(() => $(L, '.promo'), 'the promotion picker');
+  check($$(L, '.promopick').length === 4, 'the picker offers four pieces');
+  check(at(L, 'b7') === 'P', 'nothing moves until a piece is picked');
+  $$(L, '.promopick').find((b) => b.dataset.t === 'n').click();
+  await waitFor(() => at(L, 'a8') === 'N', 'the knight on a8');
+  check(!$(L, '.promo'), 'the picker closes');
+  check($$(L, '.moves li').at(-1).textContent.includes('bxa8=N'), 'the promotion is written as bxa8=N');
+
+  // Resign resigns for whoever is to move — Black here.
+  $(L, '.resignbtn').click();
+  await waitFor(() => $(L, '.over'), 'the local result');
+  check($(L, '.over h2').textContent === 'White wins' && $(L, '.over').textContent.includes('Black resigned'),
+    'resigning on one laptop resigns for the side to move');
+  $(L, '.go').click();
+  await waitFor(() => boardOf(L) === START && !$(L, '.over'), 'a local rematch');
+  check($(L, '.status').textContent === 'White to move' && sq(L, 'a1').style.gridRow === '8',
+    'a local rematch keeps White at the bottom and White to move');
+  check($$(L, '.scores .pts').map((p) => p.textContent).join(',') === '1,0,0', 'with the tally kept');
+
+  $(L, '.drawbtn').click();
+  await waitFor(() => $(L, '.over'), 'the local draw');
+  check($(L, '.over h2').textContent === 'Draw', '"Agree a draw" ends it straight away on one laptop');
+
+  document.querySelector('#hdrL .leave').click();
+  check(!!$(L, '.lobby .local'), 'ending the game returns to the lobby');
+} catch (err) {
+  failed++;
+  say('THREW  ' + err.message, 'bad');
+  console.error(err);
+}
+
+say(failed ? `${failed} check(s) failed` : 'all checks passed', failed ? 'bad' : 'ok');
+document.title = failed ? `FAILED (${failed})` : 'ALL PASSED';
+document.body.dataset.done = failed ? 'fail' : 'pass';
+</script>
+</body>
+</html>

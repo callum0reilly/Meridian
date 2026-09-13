@@ -28,13 +28,14 @@ import {
   TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt,
   STEP_MS, TICK_MS, TICK_HZ, MIN_PLAYERS, MAX_PLAYERS,
   CHARACTERS, CHAR_IDS, PLAYER_W, PLAYER_H, ENEMY,
-  RESPAWN_STEPS, STOMP_BOUNCE,
-  makeBody, stepPlayer, kill, respawn,
-  collectCoins, touchCheckpoint, touchFlag,
+  RESPAWN_STEPS, STOMP_BOUNCE, BUFF_STEPS,
+  makeBody, stepPlayer, kill, hurt, respawn, eatPickup, hasBuff,
+  collectCoins, collectGems, collectPickups, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
-  createRun, applyCoin, applyBump, applyStomp, applyDeath, applyFlag,
+  createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
   nextWorldId,
 } from './rules.js';
+import { sfx, unlock as unlockAudio, isMuted, setMuted } from './sfx.js';
 
 const GAME = 'bros';
 
@@ -124,8 +125,10 @@ const GAME_HTML = `
         <li><kbd>S</kbd><span>drop through thin platforms</span></li>
       </ul>
       <div class="blurb">Land on the round ones. Never land on the spiky ones.
-        Bump <b>?</b> blocks from below. The flag ends the level for everyone —
-        deaths just send you back to your checkpoint.</div>
+        Bump <b>?</b> blocks for coins and <b>@</b> blocks for a heart shard —
+        one free hit. Springs launch you. Find the three gems. The flag ends
+        the level for everyone; the team shares its lives, and every 20 coins
+        earns one back.</div>
       <div class="loghead">World</div>
       <div class="worldinfo"></div>
       <div class="loghead">Party</div>
@@ -148,14 +151,18 @@ function init(root, header) {
   let lv = null;           // parsed level (every machine parses its own copy)
   let body = null;         // my hero — simulated here, reported to the host
   let collected = null;    // Set of coin indexes (view + optimistic)
-  let used = null;         // Set of "tx,ty" spent ?-blocks (view + optimistic)
+  let gems = null;         // Set of gem indexes
+  let taken = null;        // Set of pickup indexes
+  let used = null;         // Set of "tx,ty" spent ?/@ blocks (view + optimistic)
   let flagSent = false;
+  let livesSeen = null;    // last lives count, to spot a 1-up in a room push
   let checkpointAt = null; // x of my active checkpoint, for drawing it lit
 
   let ents = new Map();    // seat -> interp entity for OTHER players
   let foes = new Map();    // enemy index -> interp entity
   let fx = [];             // transient sparkles/squashes/coin pops
   let banner = null;       // { text, until }
+  let shake = 0;           // frames of screen shake left
 
   /* ---- loops ---- */
   let raf = null;
@@ -176,8 +183,13 @@ function init(root, header) {
   let canvas = null, ctx = null;
 
   header.innerHTML = '<div class="tag brostag">Run right. Grab the flag.</div>' +
+                     '<button class="mute" title="Toggle sound"></button>' +
                      '<button class="leave" hidden>Leave room</button>';
   const leaveBtn = header.querySelector('.leave');
+  const muteBtn = header.querySelector('.mute');
+  const paintMute = () => { muteBtn.textContent = isMuted() ? 'Sound off' : 'Sound on'; };
+  paintMute();
+  muteBtn.onclick = () => { unlockAudio(); setMuted(!isMuted()); paintMute(); if (!isMuted()) sfx.coin(); };
   leaveBtn.onclick = () => {
     if (!confirm('Leave the room? This ends the game for you.')) return;
     teardown();
@@ -189,7 +201,7 @@ function init(root, header) {
     stopRender();
     room?.close();
     room = null; state = null; view = null; selfId = null;
-    lv = null; body = null; collected = null; used = null;
+    lv = null; body = null; collected = null; gems = null; taken = null; used = null;
     ents = new Map(); foes = new Map(); fx = []; banner = null;
     keys.clear(); jumpQueued = false;
     leaveBtn.hidden = true;
@@ -339,7 +351,7 @@ function init(root, header) {
     }
 
     if (msg.t === 'again') {
-      if (fromId !== state.hostId || state.phase !== 'clear') return;
+      if (fromId !== state.hostId || (state.phase !== 'clear' && state.phase !== 'over')) return;
       if (msg.mode === 'room') {
         state.phase = 'wait';
         state.run = null;
@@ -358,14 +370,22 @@ function init(root, header) {
     // Position reports flow constantly and never trigger a room push — the
     // snapshot carries them.
     if (msg.t === 'p') {
-      poses.set(seat, [+msg.x || 0, +msg.y || 0, msg.f === -1 ? -1 : 1, msg.m ? 1 : 0, msg.d ? 1 : 0]);
+      poses.set(seat, [+msg.x || 0, +msg.y || 0, msg.f === -1 ? -1 : 1, msg.m ? 1 : 0, msg.d ? 1 : 0, msg.h ? 1 : 0]);
       return;
     }
 
     if (msg.t === 'coin') { if (applyCoin(run, seat, msg.i)) pushRoom(); return; }
+    if (msg.t === 'gem') { if (applyGem(run, seat, msg.i)) pushRoom(); return; }
+    if (msg.t === 'pow') { if (applyPickup(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'bump') { if (applyBump(run, seat, +msg.bx, +msg.by)) pushRoom(); return; }
     if (msg.t === 'stomp') { if (applyStomp(run, seat, msg.i)) pushRoom(); return; }
-    if (msg.t === 'die') { if (applyDeath(run, seat)) pushRoom(); return; }
+    if (msg.t === 'die') {
+      if (applyDeath(run, seat)) {
+        if (run.over) { state.phase = 'over'; stopSim(); }
+        pushRoom();
+      }
+      return;
+    }
     if (msg.t === 'flag') {
       if (applyFlag(run, seat)) {
         state.phase = 'clear';
@@ -398,9 +418,13 @@ function init(root, header) {
         worldId: run.worldId,
         scores: run.scores,
         collected: [...run.collected],
+        gems: [...run.gems],
+        taken: [...run.taken],
         used: [...run.used],
         deadEnemies: run.enemies.filter((e) => !e.alive).map((e) => e.i),
         clearBy: run.clearBy,
+        lives: run.lives,
+        over: run.over,
       } : null,
     };
   }
@@ -415,7 +439,7 @@ function init(root, header) {
   function pushSnapshot() {
     if (!room?.isHost || !state.run) return;
     // My own hero goes in the same pool as everyone's — hosting earns nothing.
-    if (body) poses.set(seatOf(selfId), [Math.round(body.x), Math.round(body.y), body.face, Math.abs(body.vx) > 0.3 ? 1 : 0, body.dead ? 1 : 0]);
+    if (body) poses.set(seatOf(selfId), [Math.round(body.x), Math.round(body.y), body.face, Math.abs(body.vx) > 0.3 ? 1 : 0, body.dead ? 1 : 0, body.hp > 1 ? 1 : 0]);
     const snap = {
       t: 's',
       p: [...poses.entries()].map(([seat, p]) => [seat, ...p]),
@@ -486,25 +510,32 @@ function init(root, header) {
 
     if (view.phase === 'play' && prevPhase !== 'play') startPlay();
 
-    if (view.phase === 'play' && view.run) {
+    if ((view.phase === 'play' || view.phase === 'over') && view.run && lv) {
       // Merge the host's word on shared progress over our optimistic copy.
       // Anything new here was someone else's doing — a coin vanishing across
       // the map is a teammate earning their keep.
       for (const i of view.run.collected) collected.add(i);
+      for (const i of view.run.gems) gems.add(i);
+      for (const i of view.run.taken) taken.add(i);
       for (const key of view.run.used) {
         if (!used.has(key)) {
           used.add(key);
           const [tx, ty] = key.split(',').map(Number);
-          addFx('coinpop', tx * TILE + TILE / 2, ty * TILE);
+          addFx(tileAt(lv, tx, ty) === '@' ? 'heartpop' : 'coinpop', tx * TILE + TILE / 2, ty * TILE);
         }
       }
       for (const i of view.run.deadEnemies) {
         const f = foes.get(i);
         if (f && !f.dying) { addFx('squash', f.x, f.y); foes.delete(i); }
       }
+      if (livesSeen !== null && view.run.lives > livesSeen) { say('1-UP!'); sfx.oneUp(); }
+      livesSeen = view.run.lives;
     }
 
-    if (view.phase !== 'play' && view.phase !== 'clear') stopRender();
+    if (view.phase === 'over' && prevPhase === 'play') { sfx.gameOver(); releaseAll(); }
+    if (view.phase === 'clear' && prevPhase === 'play') sfx.flag();
+
+    if (view.phase === 'wait') stopRender();
 
     render();
   }
@@ -515,8 +546,11 @@ function init(root, header) {
     lv = parseWorld(WORLD_BY_ID.get(view.run.worldId));
     body = makeBody(lv, me?.char, seat);
     collected = new Set(view.run.collected);
+    gems = new Set(view.run.gems);
+    taken = new Set(view.run.taken);
     used = new Set(view.run.used);
     flagSent = false;
+    livesSeen = view.run.lives;
     checkpointAt = null;
     ents = new Map();
     foes = new Map();
@@ -537,18 +571,18 @@ function init(root, header) {
     const seat = mySeat();
     const seen = new Set();
 
-    for (const [st, x, y, f, m, d] of s.p) {
+    for (const [st, x, y, f, m, d, h] of s.p) {
       if (st === seat) continue;         // my hero is mine; the echo is stale
       seen.add(st);
       const e = ents.get(st);
       if (!e) {
-        ents.set(st, { x, y, fx: x, fy: y, tx: x, ty: y, t0: now, f, m, d });
+        ents.set(st, { x, y, fx: x, fy: y, tx: x, ty: y, t0: now, f, m, d, h });
         continue;
       }
       e.fx = e.x; e.fy = e.y;
       e.tx = x; e.ty = y;
       e.t0 = now;
-      e.f = f; e.m = m; e.d = d;
+      e.f = f; e.m = m; e.d = d; e.h = h;
     }
     for (const st of [...ents.keys()]) if (st !== seat && !seen.has(st)) ents.delete(st);
 
@@ -580,6 +614,7 @@ function init(root, header) {
   function onKeyDown(ev) {
     if (!active || ev.ctrlKey || ev.metaKey || ev.altKey) return;
     if (view?.phase !== 'play') return;
+    unlockAudio();
     const k = ev.key.toLowerCase();
     if (LEFT.has(k) || RIGHT.has(k) || JUMP.has(k) || DOWN.has(k)) {
       // Space scrolls and arrows pan — ruinous mid-jump. Only swallowed once
@@ -615,27 +650,51 @@ function init(root, header) {
     jumpQueued = false;
 
     const wasDead = body.dead;
+    const hadBuff = body.buff;
     const ev = stepPlayer(body, input, lv);
+
+    if (ev.jumped) sfx.jump();
+    if (ev.landed) { sfx.land(); addFx('dust', body.x, body.y + PLAYER_H / 2); }
+    if (ev.spring) { sfx.spring(); addFx('dust', body.x, body.y + PLAYER_H / 2); }
+    if (hadBuff && !body.buff && !body.dead) sfx.buffEnd();
 
     if (ev.bump) {
       const key = ev.bump.tx + ',' + ev.bump.ty;
-      if (tileAt(lv, ev.bump.tx, ev.bump.ty) === '?' && !used.has(key)) {
+      const ch = tileAt(lv, ev.bump.tx, ev.bump.ty);
+      if ((ch === '?' || ch === '@') && !used.has(key)) {
         used.add(key);
-        addFx('coinpop', ev.bump.tx * TILE + TILE / 2, ev.bump.ty * TILE);
+        addFx(ch === '@' ? 'heartpop' : 'coinpop', ev.bump.tx * TILE + TILE / 2, ev.bump.ty * TILE);
         intent({ t: 'bump', bx: ev.bump.tx, by: ev.bump.ty });
       }
+      sfx.bump();
     }
 
-    if (ev.dead && !wasDead) {
-      say(ev.dead === 'pit' ? 'Long way down…' : 'Ouch!');
-      intent({ t: 'die' });
-    }
+    if (ev.hurt) { say('Lost your shard!'); sfx.hurt(); shake = 6; }
+
+    if (ev.dead && !wasDead) died(ev.dead === 'pit' ? 'Long way down…' : 'Ouch!');
 
     if (!body.dead) {
       for (const i of collectCoins(body, lv, collected)) {
         collected.add(i);
         addFx('sparkle', lv.coins[i].x, lv.coins[i].y);
+        sfx.coin();
         intent({ t: 'coin', i });
+      }
+      for (const i of collectGems(body, lv, gems)) {
+        gems.add(i);
+        addFx('gemburst', lv.gems[i].x, lv.gems[i].y);
+        sfx.gem();
+        say(`Gem ${gems.size} of ${lv.gems.length}!`);
+        intent({ t: 'gem', i });
+      }
+      for (const i of collectPickups(body, lv, taken, used)) {
+        taken.add(i);
+        const p = lv.pickups[i];
+        eatPickup(body, p.type);
+        addFx('sparkle', p.x, p.y);
+        if (p.type === 'heart') { sfx.heart(); say('Heart shard — one free hit!'); }
+        else { sfx.powerup(); say({ speed: 'Speed surge!', ward: 'Spike ward!', magnet: 'Coin magnet!' }[p.type]); }
+        intent({ t: 'pow', i });
       }
 
       const cp = touchCheckpoint(body, lv);
@@ -644,6 +703,7 @@ function init(root, header) {
         body.cy = cp.y;
         checkpointAt = cp.x;
         say('Checkpoint!');
+        sfx.checkpoint();
       }
 
       // Enemies live where the host last said they were — a whisker behind
@@ -654,11 +714,12 @@ function init(root, header) {
           body.vy = STOMP_BOUNCE;
           addFx('squash', f.x, f.y);
           foes.delete(f.i);
+          sfx.stomp();
           intent({ t: 'stomp', i: f.i });
         } else if (verdict === 'hurt') {
-          kill(body);
-          say('Ouch!');
-          intent({ t: 'die' });
+          const res = hurt(body);
+          if (res === 'dead') died('Ouch!');
+          else if (res === 'shard') { say('Lost your shard!'); sfx.hurt(); shake = 6; }
           break;
         }
       }
@@ -672,6 +733,13 @@ function init(root, header) {
     }
   }
 
+  function died(text) {
+    say(text);
+    sfx.die();
+    shake = 10;
+    intent({ t: 'die' });
+  }
+
   function sendPos(ts) {
     if (!body || view?.phase !== 'play' || ts - lastSend < TICK_MS) return;
     lastSend = ts;
@@ -681,6 +749,7 @@ function init(root, header) {
       f: body.face,
       m: Math.abs(body.vx) > 0.3 ? 1 : 0,
       d: body.dead ? 1 : 0,
+      h: body.hp > 1 ? 1 : 0,
     });
   }
 
@@ -749,17 +818,28 @@ function init(root, header) {
     if (lv.world.id === 'frost') drawSnow(ts);
 
     ctx.save();
-    ctx.translate(-Math.round(cam), 0);
+    let sx = 0, sy = 0;
+    if (shake > 0) {
+      shake -= 1;
+      sx = (Math.random() - 0.5) * shake * 1.2;
+      sy = (Math.random() - 0.5) * shake * 1.2;
+    }
+    ctx.translate(-Math.round(cam) + sx, sy);
 
     drawTiles(ts, pal);
     drawCheckpoints(ts, pal);
     drawFlag(ts, pal);
     drawCoins(ts);
+    drawGems(ts);
+    drawPickups(ts);
     for (const f of foes.values()) drawEnemy(f, lerpX(f), lerpY(f), ts);
     for (const [seat, e] of ents) {
-      drawHero(lerpX(e), lerpY(e), e.f, !!e.m, !!e.d, view.seats[seat], false, ts);
+      drawHero(lerpX(e), lerpY(e), e.f, !!e.m, !!e.d, view.seats[seat], false, ts, { shard: !!e.h });
     }
-    if (body) drawHero(body.x, body.y, body.face, Math.abs(body.vx) > 0.3, body.dead, view.seats[mySeat()], true, ts);
+    if (body) {
+      drawHero(body.x, body.y, body.face, Math.abs(body.vx) > 0.3, body.dead, view.seats[mySeat()], true, ts,
+        { shard: body.hp > 1, buff: body.buff?.type, vx: body.vx });
+    }
     drawFx(ts);
 
     ctx.restore();
@@ -824,24 +904,42 @@ function init(root, header) {
           ctx.moveTo(x + TILE / 4, y + TILE / 2); ctx.lineTo(x + TILE / 4, y + TILE);
           ctx.moveTo(x + 3 * TILE / 4, y + TILE / 2); ctx.lineTo(x + 3 * TILE / 4, y + TILE);
           ctx.stroke();
-        } else if (ch === '?') {
+        } else if (ch === '?' || ch === '@') {
           const spent = used.has(tx + ',' + ty);
-          ctx.fillStyle = spent ? pal.blockDead : pal.block;
+          ctx.fillStyle = spent ? pal.blockDead : ch === '@' ? '#ff6b9a' : pal.block;
           ctx.fillRect(x, y, TILE, TILE);
           ctx.strokeStyle = 'rgba(0,0,0,0.35)';
           ctx.lineWidth = 2;
           ctx.strokeRect(x + 1, y + 1, TILE - 2, TILE - 2);
           if (!spent) {
             const lift = Math.sin(ts / 260 + tx) * 1.5;
-            ctx.fillStyle = '#7a4a00';
+            ctx.fillStyle = ch === '@' ? '#7a1f3a' : '#7a4a00';
             ctx.font = 'bold 20px ui-monospace, monospace';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText('?', x + TILE / 2, y + TILE / 2 + 1 + lift);
+            ctx.fillText(ch === '@' ? '♥' : '?', x + TILE / 2, y + TILE / 2 + 1 + lift);
           } else {
             ctx.fillStyle = 'rgba(0,0,0,0.3)';
             ctx.fillRect(x + TILE / 2 - 3, y + TILE / 2 - 3, 6, 6);
           }
+        } else if (ch === '!') {
+          // A coil on a base plate; the coil squashes when someone is on it.
+          const pressed = body && !body.dead && Math.abs(body.x - (x + TILE / 2)) < 18 && Math.abs(body.y + PLAYER_H / 2 - y) < 6;
+          const top = pressed ? y + 14 : y + 4;
+          ctx.fillStyle = '#3a4763';
+          ctx.fillRect(x + 2, y + TILE - 6, TILE - 4, 6);
+          ctx.strokeStyle = '#c9d3e6';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          const coils = 4;
+          for (let i = 0; i <= coils; i++) {
+            const yy = top + (TILE - 8 - (top - y)) * (i / coils);
+            ctx.moveTo(x + 6, yy);
+            ctx.lineTo(x + TILE - 6, yy + 3);
+          }
+          ctx.stroke();
+          ctx.fillStyle = '#e5484d';
+          ctx.fillRect(x + 3, top - 4, TILE - 6, 5);
         } else if (ch === '|') {
           ctx.fillStyle = pal.pillar;
           ctx.fillRect(x + 3, y, TILE - 6, TILE);
@@ -935,6 +1033,70 @@ function init(root, header) {
     }
   }
 
+  function drawGem(x, y, size, ts, seed = 0) {
+    const t = ts / 400 + seed;
+    const glow = 0.5 + 0.5 * Math.sin(t * 2);
+    ctx.save();
+    ctx.translate(x, y + Math.sin(t) * 2);
+    ctx.fillStyle = `rgba(120,220,255,${0.15 + glow * 0.2})`;
+    ctx.beginPath();
+    ctx.arc(0, 0, size * 1.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#39c0d6';
+    ctx.beginPath();
+    ctx.moveTo(0, -size); ctx.lineTo(size * 0.85, -size * 0.3);
+    ctx.lineTo(size * 0.55, size); ctx.lineTo(-size * 0.55, size);
+    ctx.lineTo(-size * 0.85, -size * 0.3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,0.75)';
+    ctx.beginPath();
+    ctx.moveTo(-size * 0.5, -size * 0.35); ctx.lineTo(0, -size * 0.85); ctx.lineTo(size * 0.5, -size * 0.35);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawGems(ts) {
+    for (let i = 0; i < lv.gems.length; i++) {
+      if (gems.has(i)) continue;
+      drawGem(lv.gems[i].x, lv.gems[i].y, 11, ts, i);
+    }
+  }
+
+  const PICKUP_LOOK = {
+    heart:  { bg: '#ff6b9a', glyph: '♥' },
+    speed:  { bg: '#ffb224', glyph: '»' },
+    ward:   { bg: '#7fb2e6', glyph: '◈' },
+    magnet: { bg: '#c563e6', glyph: 'U' },
+  };
+
+  function drawPickups(ts) {
+    for (let i = 0; i < lv.pickups.length; i++) {
+      if (taken.has(i)) continue;
+      const p = lv.pickups[i];
+      if (p.block && !used.has(p.block)) continue;
+      const look = PICKUP_LOOK[p.type];
+      const bob = Math.sin(ts / 300 + i) * 2.5;
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y + 14, 9, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = look.bg;
+      ctx.beginPath();
+      ctx.roundRect(p.x - 11, p.y - 11 + bob, 22, 22, 6);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.fillStyle = '#1b1020';
+      ctx.font = 'bold 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(look.glyph, p.x, p.y + 1 + bob);
+    }
+  }
+
   function drawEnemy(f, x, y, ts) {
     const spec = ENEMY[f.type];
     const wob = Math.sin(ts / 120 + f.i) * 1.5;
@@ -981,11 +1143,44 @@ function init(root, header) {
     }
   }
 
-  function drawHero(x, y, face, moving, dead, seat, isMe, ts) {
+  function drawHero(x, y, face, moving, dead, seat, isMe, ts, extra = {}) {
     const ch = CHARACTERS[seat?.char] || CHARACTERS.rex;
     const hw = PLAYER_W / 2, hh = PLAYER_H / 2;
     const bob = moving && !dead ? Math.sin(ts / 60) * 1.4 : 0;
     const blink = isMe && body?.inv > 0 && Math.floor(ts / 90) % 2 === 0;
+
+    if (!dead && extra.buff === 'speed' && Math.abs(extra.vx || 0) > 1) {
+      // Afterimages trailing the runner.
+      for (let i = 1; i <= 3; i++) {
+        ctx.fillStyle = `rgba(255,178,36,${0.22 - i * 0.06})`;
+        ctx.beginPath();
+        ctx.roundRect(x - hw - face * i * 9, y - hh + 4, PLAYER_W, PLAYER_H - 4, 6);
+        ctx.fill();
+      }
+    }
+    if (!dead && extra.buff === 'ward') {
+      ctx.strokeStyle = `rgba(127,178,230,${0.5 + 0.3 * Math.sin(ts / 120)})`;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.arc(x, y, 24, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    if (!dead && extra.buff === 'magnet') {
+      ctx.strokeStyle = 'rgba(197,99,230,0.45)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 6]);
+      ctx.lineDashOffset = -ts / 30;
+      ctx.beginPath();
+      ctx.arc(x, y, 40, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (!dead && extra.shard) {
+      ctx.fillStyle = `rgba(255,107,154,${0.18 + 0.1 * Math.sin(ts / 150)})`;
+      ctx.beginPath();
+      ctx.ellipse(x, y + 2, hw + 8, hh + 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     ctx.save();
     ctx.globalAlpha = dead ? 0.35 : blink ? 0.45 : 1;
@@ -1040,6 +1235,15 @@ function init(root, header) {
       ctx.fill();
     }
 
+    if (!dead && extra.shard) {
+      // The shard rides on the cap.
+      ctx.fillStyle = '#ff6b9a';
+      ctx.font = 'bold 10px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('♥', x + face * 1, y - hh - 2 + bob);
+    }
+
     ctx.globalAlpha = 1;
     ctx.restore();
 
@@ -1077,6 +1281,29 @@ function init(root, header) {
         ctx.ellipse(f.x, f.y + 8, 14 + k * 6, 4 * (1 - k) + 1, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
+      } else if (f.type === 'dust') {
+        ctx.fillStyle = `rgba(255,255,255,${0.45 * (1 - k)})`;
+        for (let i = -1; i <= 1; i += 2) {
+          ctx.beginPath();
+          ctx.arc(f.x + i * (6 + k * 14), f.y - 2 - k * 6, 3 + k * 3, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else if (f.type === 'heartpop') {
+        const y = f.y - 22 * Math.sin(Math.min(1, k * 1.4) * Math.PI);
+        ctx.globalAlpha = 1 - k;
+        ctx.fillStyle = '#ff6b9a';
+        ctx.font = 'bold 18px ui-sans-serif, system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('♥', f.x, y);
+        ctx.globalAlpha = 1;
+      } else if (f.type === 'gemburst') {
+        ctx.globalAlpha = 1 - k;
+        for (let i = 0; i < 8; i++) {
+          const a = (i / 8) * Math.PI * 2;
+          drawGem(f.x + Math.cos(a) * 34 * k, f.y + Math.sin(a) * 34 * k, 4, ts, i);
+        }
+        ctx.globalAlpha = 1;
       }
     }
   }
@@ -1085,6 +1312,13 @@ function init(root, header) {
     const run = view?.run;
     if (!run) return;
     const coins = run.scores.reduce((n, s) => n + (s?.c || 0), 0);
+    const me = CHARACTERS[view.seats[mySeat()]?.char] || CHARACTERS.rex;
+
+    ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+
+    // coins
     ctx.fillStyle = 'rgba(10,14,24,0.55)';
     ctx.beginPath();
     ctx.roundRect(10, 10, 92, 30, 8);
@@ -1094,10 +1328,65 @@ function init(root, header) {
     ctx.ellipse(27, 25, 8, 9, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = '#fff';
-    ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
     ctx.fillText('× ' + coins, 42, 26);
+
+    // lives: the hero's cap, then the count
+    if (run.lives !== null && run.lives !== undefined) {
+      ctx.fillStyle = 'rgba(10,14,24,0.55)';
+      ctx.beginPath();
+      ctx.roundRect(108, 10, 78, 30, 8);
+      ctx.fill();
+      ctx.fillStyle = me.hex;
+      ctx.beginPath();
+      ctx.arc(125, 27, 8, Math.PI, 0);
+      ctx.fill();
+      ctx.fillStyle = me.dark;
+      ctx.fillRect(117, 26, 18, 3);
+      ctx.fillStyle = run.lives <= 1 && Math.floor(ts / 400) % 2 === 0 ? '#ff8a8a' : '#fff';
+      ctx.fillText('× ' + run.lives, 140, 26);
+    }
+
+    // gems: three slots
+    ctx.fillStyle = 'rgba(10,14,24,0.55)';
+    ctx.beginPath();
+    ctx.roundRect(192, 10, 24 + lv.gems.length * 22, 30, 8);
+    ctx.fill();
+    for (let i = 0; i < lv.gems.length; i++) {
+      const x = 212 + i * 22;
+      if (gems.has(i)) drawGem(x, 25, 7, ts, i);
+      else {
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(x, 18); ctx.lineTo(x + 6, 23); ctx.lineTo(x + 4, 32); ctx.lineTo(x - 4, 32); ctx.lineTo(x - 6, 23);
+        ctx.closePath();
+        ctx.stroke();
+      }
+    }
+
+    // the active buff, with a draining bar
+    if (body?.buff) {
+      const look = PICKUP_LOOK[body.buff.type];
+      const k = body.buff.t / BUFF_STEPS;
+      ctx.fillStyle = 'rgba(10,14,24,0.55)';
+      ctx.beginPath();
+      ctx.roundRect(VIEW_W - 130, 10, 120, 30, 8);
+      ctx.fill();
+      ctx.fillStyle = look.bg;
+      ctx.beginPath();
+      ctx.roundRect(VIEW_W - 122, 16, 18, 18, 5);
+      ctx.fill();
+      ctx.fillStyle = '#1b1020';
+      ctx.font = 'bold 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(look.glyph, VIEW_W - 113, 26);
+      ctx.fillStyle = 'rgba(255,255,255,0.25)';
+      ctx.fillRect(VIEW_W - 98, 21, 80, 8);
+      ctx.fillStyle = k < 0.25 && Math.floor(ts / 150) % 2 === 0 ? '#ff8a8a' : look.bg;
+      ctx.fillRect(VIEW_W - 98, 21, 80 * k, 8);
+      ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'left';
+    }
 
     // Teammates off screen: a nudge along the edge so co-op stays co-op.
     for (const [seat, e] of ents) {
@@ -1221,53 +1510,77 @@ function init(root, header) {
 
     el('party').innerHTML = view.seats.map((s, i) => {
       const ch = CHARACTERS[s.char];
-      const sc = view.run.scores[i] || { c: 0, s: 0, d: 0 };
+      const sc = view.run.scores[i] || { c: 0, s: 0, d: 0, g: 0 };
       return `
         <li class="${s.connected ? '' : 'gone'}">
           <div class="chip" style="background:${ch ? ch.hex : '#3a4763'}"></div>
           <div class="nm">${esc(s.name)}${s.id === selfId ? ' (you)' : ''}</div>
-          <div class="sc" title="coins · stomps · deaths">🪙${sc.c} · 👟${sc.s} · 💀${sc.d}</div>
+          <div class="sc" title="coins · gems · stomps · deaths">🪙${sc.c} · 💎${sc.g || 0} · 👟${sc.s} · 💀${sc.d}</div>
         </li>`;
+    }).join('');
+  }
+
+  function scoreRows() {
+    return view.seats.map((s, i) => {
+      const ch = CHARACTERS[s.char];
+      const sc = view.run.scores[i] || { c: 0, s: 0, d: 0, g: 0 };
+      return `
+        <div class="crow">
+          <div class="chip" style="background:${ch ? ch.hex : '#3a4763'}"></div>
+          <div class="nm">${esc(s.name)}</div>
+          <div class="n">${sc.c} 🪙</div>
+          <div class="n">${sc.g || 0} 💎</div>
+          <div class="n">${sc.s} 👟</div>
+          <div class="n">${sc.d} 💀</div>
+        </div>`;
     }).join('');
   }
 
   function renderModal() {
     const modal = el('modal');
     if (!modal) return;
-    if (view.phase !== 'clear') { modal.hidden = true; modal.innerHTML = ''; return; }
+    if (view.phase !== 'clear' && view.phase !== 'over') { modal.hidden = true; modal.innerHTML = ''; return; }
 
     const isHost = selfId === view.hostId;
-    const who = view.seats[view.run.clearBy];
-    const rows = view.seats.map((s, i) => {
-      const ch = CHARACTERS[s.char];
-      const sc = view.run.scores[i] || { c: 0, s: 0, d: 0 };
-      return `
-        <div class="crow">
-          <div class="chip" style="background:${ch ? ch.hex : '#3a4763'}"></div>
-          <div class="nm">${esc(s.name)}</div>
-          <div class="n">${sc.c} 🪙</div>
-          <div class="n">${sc.s} 👟</div>
-          <div class="n">${sc.d} 💀</div>
-        </div>`;
-    }).join('');
+    const world = WORLD_BY_ID.get(view.run.worldId);
+    const gemsGot = view.run.gems.length;
+    const gemsAll = lv?.gems.length ?? 3;
 
     modal.hidden = false;
-    modal.innerHTML = `
-      <div class="card2 clear">
-        <h2>COURSE CLEAR!</h2>
-        <div class="sub">${esc(who?.name || 'Someone')} reached the flag on ${esc(WORLD_BY_ID.get(view.run.worldId).name)}.</div>
-        <div class="ctable">${rows}</div>
-        ${isHost ? `
-          <div class="btnrow">
-            <button class="primary go-next">Next world</button>
-            <button class="go-replay">Replay</button>
-            <button class="go-room">Back to room</button>
-          </div>`
-        : '<div class="hint">Waiting for the host to pick what\'s next…</div>'}
-      </div>`;
+    if (view.phase === 'over') {
+      modal.innerHTML = `
+        <div class="card2 over">
+          <h2>GAME OVER</h2>
+          <div class="sub">The team ran out of lives on ${esc(world.name)}.</div>
+          <div class="ctable">${scoreRows()}</div>
+          ${isHost ? `
+            <div class="btnrow">
+              <button class="primary go-replay">Try again</button>
+              <button class="go-room">Back to room</button>
+            </div>`
+          : '<div class="hint">Waiting for the host…</div>'}
+        </div>`;
+    } else {
+      const who = view.seats[view.run.clearBy];
+      modal.innerHTML = `
+        <div class="card2 clear">
+          <h2>COURSE CLEAR!</h2>
+          <div class="sub">${esc(who?.name || 'Someone')} reached the flag on ${esc(world.name)}.
+            Gems: ${gemsGot} / ${gemsAll}${gemsGot === gemsAll ? ' — all of them!' : ''}</div>
+          <div class="ctable">${scoreRows()}</div>
+          ${isHost ? `
+            <div class="btnrow">
+              <button class="primary go-next">Next world</button>
+              <button class="go-replay">Replay</button>
+              <button class="go-room">Back to room</button>
+            </div>`
+          : '<div class="hint">Waiting for the host to pick what\'s next…</div>'}
+        </div>`;
+    }
 
     if (!isHost) return;
-    modal.querySelector('.go-next').onclick = () => intent({ t: 'again', mode: 'next' });
+    const next = modal.querySelector('.go-next');
+    if (next) next.onclick = () => intent({ t: 'again', mode: 'next' });
     modal.querySelector('.go-replay').onclick = () => intent({ t: 'again', mode: 'replay' });
     modal.querySelector('.go-room').onclick = () => intent({ t: 'again', mode: 'room' });
   }
@@ -1279,7 +1592,7 @@ function init(root, header) {
   // running — everyone else's game is inside it.
   function onShow() {
     active = true;
-    if (view?.phase === 'play' || view?.phase === 'clear') startRender();
+    if (view?.phase === 'play' || view?.phase === 'clear' || view?.phase === 'over') startRender();
   }
 
   function onHide() {

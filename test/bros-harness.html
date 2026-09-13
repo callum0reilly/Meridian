@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bros two-player harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/bros.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 92vh; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-width: 0; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-bros { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+  .rig.solo .seatbox.b { display: none; }
+</style>
+</head>
+<body>
+<div class="rig" id="rig">
+  <div class="seatbox a"><h3>Host</h3><div class="hdr" id="hdrA"></div><div id="panel-bros" class="panel" data-who="A"></div></div>
+  <div class="seatbox b"><h3>Joiner</h3><div class="hdr" id="hdrB"></div><div id="panel-bros" class="panel" data-who="B"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+// Drives Bros through the in-memory PeerJS stand-in so it can be played and
+// poked in one tab without the public broker. Query options:
+//   ?world=cavern     pick a world (default meadow)
+//   ?solo=1           host only, no joiner
+//   ?auto=1           create the room, pick heroes and start automatically
+// Both panels listen to the same keyboard, so one set of keys drives both
+// heroes — handy for watching the sync, odd for anything else.
+import { install } from './fake-peer.js';
+install();
+const bros = (await import('../js/games/bros/index.js')).default;
+
+const q = new URLSearchParams(location.search);
+const solo = q.get('solo') === '1';
+const world = q.get('world') || 'meadow';
+if (solo) document.getElementById('rig').classList.add('solo');
+
+const out = document.getElementById('results');
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 4000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+bros.init(A, document.getElementById('hdrA'));
+bros.onShow();
+if (!solo) { bros.init(B, document.getElementById('hdrB')); bros.onShow(); }
+
+const $ = (root, sel) => root.querySelector(sel);
+
+if (q.get('auto') === '1') {
+  try {
+    $(A, '.name').value = 'Callum';
+    $(A, '.create').click();
+    await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+    const code = $(A, '.codeval').textContent;
+    say('room ' + code, 'ok');
+    if (!solo) {
+      $(B, '.name').value = 'Mate';
+      $(B, '.codein').value = code;
+      $(B, '.join').click();
+      await waitFor(() => $(B, '.seats')?.children.length === 2, 'joiner in the room');
+    }
+    $(A, '.charcard[data-c="rex"]').click();
+    if (!solo) {
+      await waitFor(() => $(B, '.charcard[data-c="rex"]')?.disabled, 'rex taken on B');
+      $(B, '.charcard[data-c="bea"]').click();
+    }
+    await sleep(50);
+    const wb = $(A, `.worldbtn[data-w="${world}"]`);
+    if (wb) wb.click();
+    await waitFor(() => !$(A, '.start').disabled, 'start enabled');
+    $(A, '.start').click();
+    await waitFor(() => $(A, '.board'), 'the board');
+    say('playing ' + world, 'ok');
+  } catch (err) {
+    say('threw: ' + err.message, 'bad');
+    console.error(err);
+  }
+}
+</script>
+</body>
+</html>

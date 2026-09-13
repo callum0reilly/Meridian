@@ -6,11 +6,11 @@ import assert from 'node:assert/strict';
 import {
   TILE, ROWS, WORLDS, parseWorld, tileAt,
   CHARACTERS, CHAR_IDS, PLAYER_H, ENEMY,
-  GRAVITY, COYOTE, JUMP_CUT, SPAWN_INVULN,
-  makeBody, stepPlayer, kill, respawn,
-  collectCoins, touchCheckpoint, touchFlag,
+  GRAVITY, COYOTE, JUMP_CUT, SPAWN_INVULN, SPRING_VY, BUFF_STEPS, COINS_PER_LIFE,
+  makeBody, stepPlayer, kill, hurt, respawn, eatPickup, hasBuff,
+  collectCoins, collectGems, collectPickups, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
-  createRun, applyCoin, applyBump, applyStomp, applyDeath, applyFlag,
+  createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
   nextWorldId,
 } from '../js/games/bros/rules.js';
 
@@ -21,26 +21,31 @@ import {
  * 16 columns, ROWS tall. The floor spans columns 0–13 with a pit at 14–15;
  * above it: a one-way platform, a ?-block, a floating spike (off the running
  * lane, so tests that sprint along the floor don't die by set dressing),
- * a coin, a checkpoint and the flag.
+ * a coin, a checkpoint and the flag. A gem, a heart block and a speed
+ * pickup sit high up the left side, and column 12's floor is a spring.
  *
  *   col:  0123456789012345
- *         ....=..^          ROWS-6   platform (4), spike (7)
- *         .?                ROWS-5   ?-block (1)
- *         ......o           ROWS-4   coin (6)
- *         .S......C.F       ROWS-3   spawn (1), checkpoint (8), flag (10)
- *         ##############..  ROWS-2   floor, pit at 14–15
+ *         ..G.........      ROWS-9   gem (2)
+ *         ......@.....      ROWS-8   heart block (6)
+ *         ....=..^....      ROWS-6   platform (4), spike (7)
+ *         .?..Z.......      ROWS-5   ?-block (1), speed pickup (4)
+ *         ......o.....      ROWS-4   coin (6)
+ *         .S......C.F.      ROWS-3   spawn (1), checkpoint (8), flag (10)
+ *         ############!#..  ROWS-2   floor, spring at 12, pit at 14–15
  *         ##############..  ROWS-1
  */
-function tinyWorld({ ice = false } = {}) {
+function tinyWorld({ ice = false, lives } = {}) {
   const r = (s) => s.padEnd(16, '.');
   const map = Array.from({ length: ROWS }, () => r(''));
+  map[ROWS - 9] = r('..G');
+  map[ROWS - 8] = r('......@');
   map[ROWS - 6] = r('....=..^');
-  map[ROWS - 5] = r('.?');
+  map[ROWS - 5] = r('.?..Z');
   map[ROWS - 4] = r('......o');
   map[ROWS - 3] = r('.S......C.F');
-  map[ROWS - 2] = r('##############');
+  map[ROWS - 2] = r('############!#');
   map[ROWS - 1] = r('##############');
-  return { id: 'tiny', name: 'Tiny', sub: '', ice, palette: {}, map };
+  return { id: 'tiny', name: 'Tiny', sub: '', ice, lives, palette: {}, map };
 }
 
 const lvOf = (opts) => parseWorld(tinyWorld(opts));
@@ -76,6 +81,17 @@ test('every world parses with the essentials in place', () => {
     assert.ok(lv.coins.length > 0, `${w.id}: has coins`);
     assert.ok(lv.enemies.length > 0, `${w.id}: has enemies`);
     assert.ok(lv.checkpoints.length > 0, `${w.id}: has a checkpoint`);
+    assert.equal(lv.gems.length, 3, `${w.id}: exactly three gems`);
+    assert.ok(lv.pickups.some((p) => p.type === 'heart'), `${w.id}: has a heart block`);
+    // No row was silently padded — a short row means a run-length miscount.
+    for (const row of w.map) assert.equal(row.length, lv.w, `${w.id}: every row is exactly ${lv.w} wide`);
+    // Nothing solid may be placed inside the ground rows' neighbours such that
+    // an entity is embedded in rock — every lifted entity sits in air.
+    for (const list of [lv.coins, lv.gems, lv.checkpoints, lv.enemies]) {
+      for (const p of list) {
+        assert.equal(tileAt(lv, Math.floor(p.x / TILE), Math.floor(p.y / TILE)), '.', `${w.id}: entity at ${p.x},${p.y} sits in air`);
+      }
+    }
     // Spawn must be open air with ground beneath — a world that kills you on
     // frame one is a data typo this test exists to catch.
     const stx = Math.floor(lv.spawn.x / TILE), sty = Math.floor(lv.spawn.y / TILE);
@@ -90,9 +106,15 @@ test('dynamic entities are lifted out of the grid', () => {
   assert.equal(lv.coins.length, 1);
   assert.equal(lv.enemies.length, 0);
   assert.equal(lv.checkpoints.length, 1);
+  assert.equal(lv.gems.length, 1);
+  assert.equal(lv.pickups.length, 2);
   for (const row of lv.grid) {
-    assert.ok(!/[SoECXF]/.test(row), 'no entity glyphs left behind in the grid');
+    assert.ok(!/[SoECXFGZWN]/.test(row), 'no entity glyphs left behind in the grid');
   }
+  const heart = lv.pickups.find((p) => p.type === 'heart');
+  assert.equal(heart.block, `6,${ROWS - 8}`, 'the heart remembers its block');
+  assert.equal(heart.y, (ROWS - 9) * TILE + TILE / 2, 'and pops out on top of it');
+  assert.equal(tileAt(lv, 6, ROWS - 8), '@', 'the block itself stays solid in the grid');
 });
 
 test('the four heroes really differ, and all clear the tallest required jump', () => {
@@ -202,6 +224,96 @@ test('one-way platform: lands from above, passes from below, drops on demand', (
   stepPlayer(a, press({ down: true }), lv);
   steps(a, IDLE, 8, lv);
   assert.ok(a.y + PLAYER_H / 2 > platTop + 4, 'dropped below the platform');
+});
+
+test('a spring launches far higher than any jump, and the cut cannot shorten it', () => {
+  const lv = lvOf();
+  const b = makeBody(lv, 'sunny', 0);
+  b.x = 12 * TILE + TILE / 2;
+  b.y = GROUND_TOP - 60;
+  let sprung = false;
+  for (let i = 0; i < 30 && !sprung; i++) sprung = stepPlayer(b, IDLE, lv).spring;
+  assert.ok(sprung, 'landing on the spring fired it');
+  assert.ok(b.vy < -SPRING_VY + 1, 'launched at spring speed');
+  let top = b.y;
+  for (let i = 0; i < 80; i++) { stepPlayer(b, IDLE, lv); top = Math.min(top, b.y); }   // never holding jump
+  const rise = (GROUND_TOP - PLAYER_H / 2) - top;
+  assert.ok(rise > TILE * 6, `rose ${rise.toFixed(0)}px — more than six tiles`);
+  assert.ok(rise > CHARACTERS.gil.jump ** 2 / (2 * GRAVITY), 'higher than even Gil can jump');
+});
+
+test('a heart shard absorbs one hit, then spikes kill', () => {
+  const lv = lvOf();
+  const b = grounded(lv);
+  eatPickup(b, 'heart');
+  assert.equal(b.hp, 2);
+  b.x = 7 * TILE + TILE / 2;
+  b.y = (ROWS - 6) * TILE + TILE / 2;
+  b.vy = 0;
+  const ev = stepPlayer(b, IDLE, lv);
+  assert.equal(ev.hurt, true, 'the spike took the shard');
+  assert.equal(ev.dead, null);
+  assert.equal(b.hp, 1);
+  assert.equal(b.inv, SPAWN_INVULN, 'and granted a moment of mercy');
+  b.inv = 0;
+  const ev2 = stepPlayer(b, IDLE, lv);
+  assert.equal(ev2.dead, 'hazard', 'the second touch is fatal');
+  assert.equal(hurt({ ...b, dead: false, hp: 1, inv: 5 }), 'shrug', 'invulnerable bodies shrug hits off');
+});
+
+test('lava ignores shards; the ward ignores spikes', () => {
+  const lava = lvOf();
+  lava.grid[ROWS - 6] = lava.grid[ROWS - 6].slice(0, 7) + '~' + lava.grid[ROWS - 6].slice(8);
+  const b = grounded(lava);
+  eatPickup(b, 'heart');
+  b.x = 7 * TILE + TILE / 2; b.y = (ROWS - 6) * TILE + TILE / 2; b.vy = 0;
+  assert.equal(stepPlayer(b, IDLE, lava).dead, 'hazard', 'lava kills a shard-holder outright');
+
+  const lv = lvOf();
+  const w = grounded(lv);
+  eatPickup(w, 'ward');
+  assert.ok(hasBuff(w, 'ward'));
+  w.x = 7 * TILE + TILE / 2; w.y = (ROWS - 6) * TILE + TILE / 2; w.vy = 0;
+  const ev = stepPlayer(w, IDLE, lv);
+  assert.equal(ev.dead, null);
+  assert.equal(ev.hurt, false);
+  assert.equal(w.dead, false, 'warded: walked through the spikes');
+});
+
+test('buffs run out, and the speed surge really is faster', () => {
+  const lv = lvOf();
+  const b = grounded(lv, 'rex');
+  eatPickup(b, 'speed');
+  steps(b, press({ right: true }), 60, lv);
+  assert.ok(b.vx > CHARACTERS.rex.speed, 'surging past the normal cap');
+  steps(b, IDLE, BUFF_STEPS, lv);
+  assert.equal(b.buff, null, 'the surge expired');
+  steps(b, press({ left: true }), 60, lv);          // back the way we came: the pit is to the right
+  assert.equal(b.vx, -CHARACTERS.rex.speed, 'back to the normal cap');
+});
+
+test('the magnet widens the coin reach', () => {
+  const lv = lvOf();
+  const b = grounded(lv);
+  b.x = lv.coins[0].x - 60;
+  b.y = lv.coins[0].y;
+  assert.equal(collectCoins(b, lv, new Set()).length, 0, 'out of ordinary reach');
+  eatPickup(b, 'magnet');
+  assert.deepEqual(collectCoins(b, lv, new Set()), [0], 'pulled in by the magnet');
+});
+
+test('gems and pickups collect by proximity; hearts wait for their block', () => {
+  const lv = lvOf();
+  const b = grounded(lv);
+  assert.equal(collectGems(b, lv, new Set()).length, 0);
+  b.x = lv.gems[0].x; b.y = lv.gems[0].y;
+  assert.deepEqual(collectGems(b, lv, new Set()), [0]);
+
+  const heartIdx = lv.pickups.findIndex((p) => p.type === 'heart');
+  const heart = lv.pickups[heartIdx];
+  b.x = heart.x; b.y = heart.y;
+  assert.equal(collectPickups(b, lv, new Set(), new Set()).length, 0, 'still inside the block');
+  assert.deepEqual(collectPickups(b, lv, new Set(), new Set([heart.block])), [heartIdx], 'out once bumped');
 });
 
 /* ---------------- dying ---------------- */
@@ -335,6 +447,48 @@ test('the run referees claims: once each, and the first flag wins', () => {
   assert.equal(applyFlag(run, 1), true);
   assert.equal(applyFlag(run, 0), false, 'the flag is already claimed');
   assert.equal(run.clearBy, 1);
+});
+
+test('gems, pickups and hearts are refereed like coins', () => {
+  const run = createRun('meadow', 2);
+  assert.equal(applyGem(run, 0, 0), true);
+  assert.equal(applyGem(run, 1, 0), false, 'a gem is taken once');
+  assert.equal(run.scores[0].g, 1);
+
+  const heartIdx = run.lv.pickups.findIndex((p) => p.type === 'heart');
+  assert.ok(heartIdx >= 0, 'meadow has a heart block');
+  assert.equal(applyPickup(run, 0, heartIdx), false, 'the heart is still in its block');
+  const [tx, ty] = run.lv.pickups[heartIdx].block.split(',').map(Number);
+  assert.equal(applyBump(run, 0, tx, ty), true, 'bumping the @ block opens it');
+  assert.equal(run.scores[0].c, 0, 'but pays no coin');
+  assert.equal(applyPickup(run, 1, heartIdx), true, 'now it can be taken');
+  assert.equal(applyPickup(run, 0, heartIdx), false, 'once');
+});
+
+test('the team shares lives; coins earn them back; the last one ends the run', () => {
+  const run = createRun('meadow', 2);
+  const start = run.lives;
+  assert.ok(start >= 3);
+  for (let i = 0; i < start - 1; i++) assert.equal(applyDeath(run, i % 2), true);
+  assert.equal(run.lives, 1);
+  assert.equal(run.over, false);
+
+  // Every coin on the map, then ?-blocks until the counter ticks over.
+  for (let i = 0; i < run.lv.coins.length; i++) applyCoin(run, i % 2, i);
+  for (let ty = 0; ty < run.lv.h && run.coinsTotal < COINS_PER_LIFE; ty++) {
+    for (let tx = 0; tx < run.lv.w && run.coinsTotal < COINS_PER_LIFE; tx++) {
+      if (tileAt(run.lv, tx, ty) === '?') applyBump(run, 0, tx, ty);
+    }
+  }
+  assert.equal(run.coinsTotal, COINS_PER_LIFE);
+  assert.equal(run.lives, 2, `${COINS_PER_LIFE} team coins is a 1-up`);
+
+  applyDeath(run, 0);
+  applyDeath(run, 1);
+  assert.equal(run.lives, 0);
+  assert.equal(run.over, true, 'out of lives');
+  assert.equal(applyDeath(run, 0), false, 'nothing more to lose');
+  assert.equal(applyFlag(run, 0), false, 'and the flag no longer counts');
 });
 
 test('spikers refuse to be stomp-scored', () => {

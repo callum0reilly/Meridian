@@ -27,7 +27,7 @@
 
 import {
   TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld,
-  tileAt, solidAt, oneWayAt, hazardAt,
+  tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt,
 } from './levels.js';
 
 export const STEP_MS = 1000 / 60;
@@ -45,10 +45,21 @@ export const JUMP_CUT = -4;             // release the key early, keep this much
 export const COYOTE = 6;                // steps of grace after walking off a ledge
 export const JUMP_BUFFER = 6;           // steps a jump press waits for the ground
 export const STOMP_BOUNCE = -8.5;
+export const SPRING_VY = 15.5;          // apex 218px — just under 7 tiles
 export const PLAYER_W = 22;
 export const PLAYER_H = 30;
 export const RESPAWN_STEPS = 80;        // dead time before you're back
 export const SPAWN_INVULN = 90;         // steps of enemy immunity after respawn
+
+/* ---- pickups ---- */
+export const BUFF_STEPS = 480;          // 8 seconds of surge / ward / magnet
+export const SPEED_MULT = 1.4;
+export const MAGNET_RADIUS = 96;
+export const COIN_RADIUS = 24;
+
+/* ---- lives ---- */
+export const DEFAULT_LIVES = 5;
+export const COINS_PER_LIFE = 20;       // team coins, like the 100-coin 1-up
 
 /**
  * The heroes. Stats differ enough to argue over, not enough to strand anyone:
@@ -84,8 +95,13 @@ export function makeBody(lv, charId, seat) {
     inv: 0,
     dead: false, deadT: 0,
     cx: x, cy: y,          // checkpoint: where death sends you back to
+    hp: 1,                 // 2 with a heart shard: one free hit
+    buff: null,            // { type: 'speed'|'ward'|'magnet', t: steps left }
+    launched: false,       // sprung: the jump-cut doesn't apply until the apex
   };
 }
+
+export const hasBuff = (b, type) => !!(b.buff && b.buff.type === type && b.buff.t > 0);
 
 /**
  * One step of one hero.
@@ -93,10 +109,11 @@ export function makeBody(lv, charId, seat) {
  * @param input {{left, right, jump, held, down}} — `jump` is the *press*
  *   (edge), `held` is the key still being down; the difference is what makes
  *   tapping hop and holding soar.
- * @returns {{bump: {tx,ty}|null, dead: 'hazard'|'pit'|null, landed: boolean}}
+ * @returns {{bump, dead, landed, jumped, spring, hurt}} — `hurt` is a shard
+ *   lost to spikes; `dead` is 'hazard' | 'pit' | null.
  */
 export function stepPlayer(b, input, lv) {
-  const ev = { bump: null, dead: null, landed: false };
+  const ev = { bump: null, dead: null, landed: false, jumped: false, spring: false, hurt: false };
   const ch = CHARACTERS[b.charId] || CHARACTERS.rex;
 
   if (b.dead) {
@@ -109,19 +126,24 @@ export function stepPlayer(b, input, lv) {
   }
 
   if (b.inv > 0) b.inv -= 1;
+  if (b.buff && --b.buff.t <= 0) b.buff = null;
+
+  const surge = hasBuff(b, 'speed');
+  const speed = ch.speed * (surge ? SPEED_MULT : 1);
+  const accel = ch.accel * (surge ? 1.3 : 1);
 
   const ice = !!lv.world.ice;
   const dir = (input.right ? 1 : 0) - (input.left ? 1 : 0);
   if (dir) {
     // On ice you steer like a shopping trolley; in the air, weakly.
-    b.vx += ch.accel * (ice && b.onGround ? 0.35 : b.onGround ? 1 : 0.65) * dir;
+    b.vx += accel * (ice && b.onGround ? 0.35 : b.onGround ? 1 : 0.65) * dir;
     b.face = dir;
   } else if (b.onGround) {
     b.vx *= ice ? 0.975 : 0.78;
   } else {
     b.vx *= 0.985;
   }
-  if (Math.abs(b.vx) > ch.speed) b.vx = ch.speed * Math.sign(b.vx);
+  if (Math.abs(b.vx) > speed) b.vx = speed * Math.sign(b.vx);
   if (!dir && Math.abs(b.vx) < 0.05) b.vx = 0;
 
   // Coyote time + a buffered jump: the two standard mercies. Pressing jump a
@@ -133,8 +155,11 @@ export function stepPlayer(b, input, lv) {
     b.coyote = 0;
     b.jbuf = 0;
     b.onGround = false;
+    b.launched = false;
+    ev.jumped = true;
   }
-  if (!input.held && b.vy < JUMP_CUT) b.vy = JUMP_CUT;
+  if (b.launched && b.vy >= 0) b.launched = false;
+  if (!input.held && !b.launched && b.vy < JUMP_CUT) b.vy = JUMP_CUT;
 
   // Down through a one-way platform, on request.
   if (input.down && b.onGround && standingOnOneWay(b, lv)) {
@@ -151,9 +176,21 @@ export function stepPlayer(b, input, lv) {
   ev.bump = res.bump;
   ev.landed = res.landed;
 
-  if (touchesHazard(b, lv)) {
+  if (b.onGround && standingOnSpring(b, lv)) {
+    b.vy = -SPRING_VY;
+    b.onGround = false;
+    b.coyote = 0;
+    b.launched = true;
+    ev.spring = true;
+  }
+
+  const hazard = touchesHazard(b, lv);
+  if (hazard === 'deadly') {
     kill(b);
     ev.dead = 'hazard';
+  } else if (hazard === 'sharp' && !hasBuff(b, 'ward')) {
+    if (hurt(b) === 'dead') ev.dead = 'hazard';
+    else ev.hurt = true;
   } else if (b.y - PLAYER_H / 2 > lv.h * TILE + 40) {
     kill(b);
     ev.dead = 'pit';
@@ -167,6 +204,21 @@ export function kill(b) {
   b.deadT = 0;
   b.vx = 0;
   b.vy = -6;       // the little upward pop every platformer death has had since 1985
+  b.hp = 1;
+  b.buff = null;
+}
+
+/** A hit that a heart shard can absorb. Spawn protection covers the moment,
+ *  so a spike run doesn't strip the shard and kill you in consecutive steps. */
+export function hurt(b) {
+  if (b.inv > 0) return 'shrug';
+  if (b.hp > 1) {
+    b.hp = 1;
+    b.inv = SPAWN_INVULN;
+    return 'shard';
+  }
+  kill(b);
+  return 'dead';
 }
 
 export function respawn(b) {
@@ -177,7 +229,14 @@ export function respawn(b) {
   b.deadT = 0;
   b.onGround = false;
   b.dropT = 0;
+  b.launched = false;
   b.inv = SPAWN_INVULN;
+}
+
+/** Eat a pickup. Hearts stack to one shard; timed buffs replace each other. */
+export function eatPickup(b, type) {
+  if (type === 'heart') b.hp = 2;
+  else b.buff = { type, t: BUFF_STEPS };
 }
 
 /* ---- collision ----
@@ -253,10 +312,15 @@ function moveY(b, lv) {
   return out;
 }
 
-function standingOnOneWay(b, lv) {
+function feetTiles(b) {
   const ty = Math.floor((b.y + HH + 2) / TILE);
   const tx0 = Math.floor((b.x - HW + EPS) / TILE);
   const tx1 = Math.floor((b.x + HW - EPS) / TILE);
+  return { ty, tx0, tx1 };
+}
+
+function standingOnOneWay(b, lv) {
+  const { ty, tx0, tx1 } = feetTiles(b);
   let oneWay = false;
   for (let tx = tx0; tx <= tx1; tx++) {
     if (solidAt(lv, tx, ty)) return false;   // partly on real ground: no drop
@@ -265,32 +329,66 @@ function standingOnOneWay(b, lv) {
   return oneWay;
 }
 
+/** A spring needs to be under the middle of you — clipping its edge with a
+ *  toe while landing on plain ground next to it shouldn't fire it. */
+function standingOnSpring(b, lv) {
+  const ty = Math.floor((b.y + HH + 2) / TILE);
+  return springAt(lv, Math.floor(b.x / TILE), ty);
+}
+
 /** Hazards test a shrunk box: brushing the tile a spike lives in shouldn't
- *  kill, standing among the points should. */
+ *  kill, standing among the points should. Returns the worst kind touched. */
 function touchesHazard(b, lv) {
   const tx0 = Math.floor((b.x - HW + 5) / TILE);
   const tx1 = Math.floor((b.x + HW - 5) / TILE);
   const ty0 = Math.floor((b.y - HH + 4) / TILE);
   const ty1 = Math.floor((b.y + HH - 4) / TILE);
+  let worst = null;
   for (let ty = ty0; ty <= ty1; ty++) {
     for (let tx = tx0; tx <= tx1; tx++) {
-      if (hazardAt(lv, tx, ty)) return true;
+      const h = hazardAt(lv, tx, ty);
+      if (h === 'deadly') return h;
+      if (h) worst = h;
     }
   }
-  return false;
+  return worst;
 }
 
 /* ============================ pickups & goals ============================ */
+
+const near = (b, p, rx, ry) => Math.abs(b.x - p.x) < rx && Math.abs(b.y - p.y) < ry;
 
 /** Coin indexes this body is touching that aren't already in `collected`.
  *  The caller sends the claim to the host; the host is the one set of record. */
 export function collectCoins(b, lv, collected) {
   if (b.dead) return [];
+  const r = hasBuff(b, 'magnet') ? MAGNET_RADIUS : COIN_RADIUS;
   const got = [];
   for (let i = 0; i < lv.coins.length; i++) {
-    if (collected.has(i)) continue;
-    const c = lv.coins[i];
-    if (Math.abs(b.x - c.x) < 24 && Math.abs(b.y - c.y) < 26) got.push(i);
+    if (!collected.has(i) && near(b, lv.coins[i], r, r + 2)) got.push(i);
+  }
+  return got;
+}
+
+export function collectGems(b, lv, collected) {
+  if (b.dead) return [];
+  const got = [];
+  for (let i = 0; i < lv.gems.length; i++) {
+    if (!collected.has(i) && near(b, lv.gems[i], 26, 28)) got.push(i);
+  }
+  return got;
+}
+
+/** Pickups in reach. A heart still inside its '@' block (the block is not in
+ *  `used`) isn't there yet. */
+export function collectPickups(b, lv, taken, used) {
+  if (b.dead) return [];
+  const got = [];
+  for (let i = 0; i < lv.pickups.length; i++) {
+    const p = lv.pickups[i];
+    if (taken.has(i)) continue;
+    if (p.block && !used.has(p.block)) continue;
+    if (near(b, p, 24, 26)) got.push(i);
   }
   return got;
 }
@@ -387,9 +485,14 @@ export function createRun(worldId, seatCount) {
     lv,
     enemies: makeEnemies(lv),
     collected: new Set(),        // coin indexes
-    used: new Set(),             // "tx,ty" of spent ?-blocks
-    scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0 })),
+    gems: new Set(),             // gem indexes
+    taken: new Set(),            // pickup indexes
+    used: new Set(),             // "tx,ty" of spent ?/@ blocks
+    scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0, g: 0 })),
+    lives: world.lives ?? DEFAULT_LIVES,
+    coinsTotal: 0,
     clearBy: -1,                 // seat that reached the flag, once someone has
+    over: false,                 // the team ran out of lives
   };
 }
 
@@ -398,20 +501,46 @@ export function createRun(worldId, seatCount) {
    two players hitting the same coin in the same tick both honestly claim it,
    and exactly one of these calls returns true. */
 
+/** Bank a team coin. Every COINS_PER_LIFE of them is a 1-up; returns whether
+ *  this one was. */
+function bankCoin(run, seat) {
+  score(run, seat).c += 1;
+  run.coinsTotal += 1;
+  if (run.coinsTotal % COINS_PER_LIFE === 0) { run.lives += 1; return true; }
+  return false;
+}
+
 export function applyCoin(run, seat, i) {
   if (!Number.isInteger(i) || i < 0 || i >= run.lv.coins.length) return false;
   if (run.collected.has(i)) return false;
   run.collected.add(i);
-  score(run, seat).c += 1;
+  bankCoin(run, seat);
   return true;
 }
 
 export function applyBump(run, seat, tx, ty) {
-  if (tileAt(run.lv, tx, ty) !== '?') return false;
+  if (!blockAt(run.lv, tx, ty)) return false;
   const key = tx + ',' + ty;
   if (run.used.has(key)) return false;
   run.used.add(key);
-  score(run, seat).c += 1;
+  if (tileAt(run.lv, tx, ty) === '?') bankCoin(run, seat);
+  return true;
+}
+
+export function applyGem(run, seat, i) {
+  if (!Number.isInteger(i) || i < 0 || i >= run.lv.gems.length) return false;
+  if (run.gems.has(i)) return false;
+  run.gems.add(i);
+  score(run, seat).g += 1;
+  return true;
+}
+
+export function applyPickup(run, seat, i) {
+  if (!Number.isInteger(i) || i < 0 || i >= run.lv.pickups.length) return false;
+  if (run.taken.has(i)) return false;
+  const p = run.lv.pickups[i];
+  if (p.block && !run.used.has(p.block)) return false;
+  run.taken.add(i);
   return true;
 }
 
@@ -423,19 +552,25 @@ export function applyStomp(run, seat, i) {
   return true;
 }
 
+/** A death costs the team a life; the last one ends the run. */
 export function applyDeath(run, seat) {
+  if (run.over) return false;
   score(run, seat).d += 1;
+  if (run.lives !== null) {
+    run.lives -= 1;
+    if (run.lives <= 0) { run.lives = 0; run.over = true; }
+  }
   return true;
 }
 
 export function applyFlag(run, seat) {
-  if (run.clearBy >= 0) return false;
+  if (run.clearBy >= 0 || run.over) return false;
   run.clearBy = seat;
   return true;
 }
 
 function score(run, seat) {
-  return run.scores[seat] || (run.scores[seat] = { c: 0, s: 0, d: 0 });
+  return run.scores[seat] || (run.scores[seat] = { c: 0, s: 0, d: 0, g: 0 });
 }
 
 /** The next world in the tour, wrapping at the end. */

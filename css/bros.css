@@ -111,6 +111,13 @@
   margin: 0 0 6px; font-size: 26px; letter-spacing: .12em; font-weight: 800;
   color: var(--win);
 }
+#panel-bros .card2.over h2 { color: var(--danger); }
+
+#panel-bros .mute {
+  font-size: 12px; padding: 5px 10px; color: var(--muted);
+  background: transparent; border: 1px solid var(--line); border-radius: 6px;
+}
+#panel-bros .mute:hover { color: var(--text); }
 #panel-bros .card2 .sub { color: var(--muted); font-size: 13px; margin-bottom: 14px; }
 
 #panel-bros .ctable { margin-bottom: 16px; }

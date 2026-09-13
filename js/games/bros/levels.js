@@ -10,11 +10,16 @@
 //   #  solid ground (drawn themed: grass top, cave rock, snow, castle stone)
 //   B  brick (solid)
 //   ?  coin block — bump it from below for a coin; goes dead after one use
+//   @  power block — bump it and a heart shard pops out on top (one extra hit)
 //   |  pillar (solid; a step to climb on)
 //   =  one-way platform: land from above, jump through from below, S drops through
-//   ^  spikes (touch = death)
+//   !  spring pad (solid; land on it and it launches you ~7 tiles up)
+//   ^  spikes (touch = lose your shard, or die without one)
 //   ~  lava (touch = death; lives at the bottom of pits in the hotter worlds)
 //   o  coin
+//   G  gem — three per world, tucked off the required path
+//   Z  speed surge pickup (timed)    W  spike ward pickup (timed)
+//   N  coin magnet pickup (timed)
 //   E  walker enemy — stomp it
 //   X  spiker enemy — do NOT stomp it
 //   C  checkpoint pennant (per player: touch it and you respawn there)
@@ -27,6 +32,10 @@
 // the level width, and `_(23)` is checkable arithmetic where 23 hand-counted
 // dots are not. The parser still pads ragged rows, so an edit that drops a
 // character shifts one feature, not the whole world.
+//
+// Later additions to a world go through `edit(map, put => ...)` with (x, y)
+// coordinates rather than re-counting the row strings — a gem at (54, 6) is
+// easier to check against the row it sits above than a `_(53) + 'G'` is.
 //
 // ---- Designing within the physics ----
 //
@@ -46,12 +55,22 @@ export const ROWS = 17;
 const _ = (n) => '.'.repeat(n);   // air
 const g = (n) => '#'.repeat(n);   // ground
 
+/** Overlay features on a finished map by coordinate: put(x, y, 'G') writes a
+ *  string rightwards from column x of row y. */
+function edit(map, fn) {
+  const rows = map.map((r) => [...r]);
+  fn((x, y, s) => { for (let i = 0; i < s.length; i++) rows[y][x + i] = s[i]; });
+  return rows.map((r) => r.join(''));
+}
+
 export const WORLDS = [
   {
     id: 'meadow',
     name: 'Meadow March',
     sub: 'Rolling grass, gentle gaps. Learn the ropes.',
     ice: false,
+    lives: 5,
+    par: 75,
     palette: {
       sky: ['#5fb8f2', '#c9ecff'],
       hillFar: '#a9dfb2', hillNear: '#6cc281',
@@ -64,7 +83,7 @@ export const WORLDS = [
       lava: null, lavaGlow: null,
       flag: '#e5484d',
     },
-    map: [
+    map: edit([
       _(150),
       _(150),
       _(150),
@@ -82,7 +101,14 @@ export const WORLDS = [
       _(2) + 'S' + _(13) + 'E' + _(23) + 'E' + _(14) + 'E' + _(14) + 'E' + _(3) + 'E' + _(2) + 'C' + _(14) + g(12) + _(8) + 'E' + _(3) + 'E' + _(16) + '|' + _(2) + '|' + _(7) + 'F' + _(5),
       g(31) + _(3) + g(27) + _(3) + g(20) + _(2) + g(36) + _(3) + g(25),
       g(31) + _(3) + g(27) + _(3) + g(20) + _(2) + g(36) + _(3) + g(25),
-    ],
+    ], (put) => {
+      put(8, 15, '!');  put(8, 8, 'G');       // the first spring, and what it's for
+      put(54, 6, 'G');                        // over the high platform
+      put(98, 8, 'G');                        // over the hill
+      put(30, 11, '@');
+      put(44, 13, 'Z');
+      put(120, 13, 'N');
+    }),
   },
 
   {
@@ -90,6 +116,8 @@ export const WORLDS = [
     name: 'Cavern Crawl',
     sub: 'Dark rock, lava pits, spikes. Watch your feet.',
     ice: false,
+    lives: 5,
+    par: 80,
     palette: {
       sky: ['#10141f', '#232c42'],
       hillFar: '#1b2438', hillNear: '#2a3550',
@@ -102,7 +130,7 @@ export const WORLDS = [
       lava: '#ff6b35', lavaGlow: '#ffd23e',
       flag: '#4a9eff',
     },
-    map: [
+    map: edit([
       g(150),
       _(10) + g(3) + _(12) + g(3) + _(12) + g(2) + _(23) + g(3) + _(27) + g(3) + _(32) + g(3) + _(17),
       _(150),
@@ -120,7 +148,14 @@ export const WORLDS = [
       _(2) + 'S' + _(9) + 'E' + _(24) + 'E' + _(6) + '^^^' + _(3) + 'X' + _(19) + 'E' + _(4) + 'C' + _(2) + '^^^' + _(3) + 'X' + _(15) + 'E' + _(4) + '^^^' + _(5) + 'X' + _(12) + 'X' + _(7) + '|' + _(2) + '|' + _(5) + 'F' + _(6),
       g(30) + _(3) + g(22) + _(4) + g(31) + _(3) + g(25) + _(3) + g(29),
       g(30) + '~~~' + g(22) + '~~~~' + g(31) + '~~~' + g(25) + '~~~' + g(29),
-    ],
+    ], (put) => {
+      put(25, 15, '!'); put(25, 7, 'G');
+      put(57, 7, 'G');
+      put(91, 7, 'G');
+      put(48, 11, '@');
+      put(66, 13, 'W');                       // right before the spike run
+      put(98, 13, 'Z');
+    }),
   },
 
   {
@@ -128,6 +163,8 @@ export const WORLDS = [
     name: 'Frostpeak',
     sub: 'Ice underfoot — braking is a suggestion.',
     ice: true,
+    lives: 5,
+    par: 80,
     palette: {
       sky: ['#7fb2e6', '#e8f4fd'],
       hillFar: '#c6dcf1', hillNear: '#9fc2e4',
@@ -140,7 +177,7 @@ export const WORLDS = [
       lava: null, lavaGlow: null,
       flag: '#30a46c',
     },
-    map: [
+    map: edit([
       _(150),
       _(150),
       _(150),
@@ -158,7 +195,14 @@ export const WORLDS = [
       _(2) + 'S' + _(17) + 'E' + _(23) + 'X' + _(23) + 'E' + _(5) + 'C' + _(15) + 'X' + _(12) + 'E' + _(18) + 'X' + _(9) + '|' + _(2) + '|' + _(6) + 'F' + _(7),
       g(25) + _(3) + g(22) + _(4) + g(26) + _(3) + g(27) + _(4) + g(36),
       g(25) + _(3) + g(22) + _(4) + g(26) + _(3) + g(27) + _(4) + g(36),
-    ],
+    ], (put) => {
+      put(52, 7, 'G');
+      put(81, 7, 'G');
+      put(128, 15, '!'); put(128, 8, 'G');
+      put(95, 11, '@');
+      put(10, 13, 'Z');
+      put(40, 13, 'N');
+    }),
   },
 
   {
@@ -166,6 +210,8 @@ export const WORLDS = [
     name: 'Sunset Citadel',
     sub: 'Battlements over a lava moat. The long march.',
     ice: false,
+    lives: 5,
+    par: 90,
     palette: {
       sky: ['#2c1a45', '#ff9d5c'],
       hillFar: '#241536', hillNear: '#3b2450',
@@ -178,7 +224,7 @@ export const WORLDS = [
       lava: '#ff5c2e', lavaGlow: '#ffcf3e',
       flag: '#ffb224',
     },
-    map: [
+    map: edit([
       _(150),
       _(150),
       _(150),
@@ -196,7 +242,14 @@ export const WORLDS = [
       _(2) + 'S' + _(14) + 'E' + _(12) + 'BB' + _(3) + 'X' + _(19) + 'E' + _(4) + 'BB' + _(3) + 'X' + _(2) + 'C' + _(13) + 'E' + _(5) + 'BB' + _(2) + 'X' + _(12) + 'E' + _(6) + 'X' + _(5) + 'BB' + _(2) + 'E' + _(9) + 'X' + _(1) + g(8) + _(4) + 'F' + _(3),
       g(22) + _(3) + g(22) + _(4) + g(21) + _(3) + g(20) + _(4) + g(26) + _(3) + g(22),
       g(22) + '~~~' + g(22) + '~~~~' + g(21) + '~~~' + g(20) + '~~~~' + g(26) + '~~~' + g(22),
-    ],
+    ], (put) => {
+      put(48, 7, 'G');
+      put(96, 7, 'G');
+      put(140, 7, 'G');
+      put(41, 11, '@');
+      put(27, 13, 'W');
+      put(100, 13, 'Z');
+    }),
   },
 ];
 
@@ -207,7 +260,7 @@ export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
    open (jumping over the top of the screen is allowed, as it always was), and
    below is the pit. */
 
-const SOLID = new Set(['#', 'B', '?', '|']);
+const SOLID = new Set(['#', 'B', '?', '@', '|', '!']);
 
 export function tileAt(lv, tx, ty) {
   if (tx < 0 || tx >= lv.w) return '#';
@@ -217,10 +270,18 @@ export function tileAt(lv, tx, ty) {
 
 export const solidAt = (lv, tx, ty) => SOLID.has(tileAt(lv, tx, ty));
 export const oneWayAt = (lv, tx, ty) => tileAt(lv, tx, ty) === '=';
+export const springAt = (lv, tx, ty) => tileAt(lv, tx, ty) === '!';
+export const blockAt = (lv, tx, ty) => { const ch = tileAt(lv, tx, ty); return ch === '?' || ch === '@'; };
+
+/** 'deadly' hazards always kill; 'sharp' ones cost a shard first. */
 export const hazardAt = (lv, tx, ty) => {
   const ch = tileAt(lv, tx, ty);
-  return ch === '^' || ch === '~';
+  if (ch === '~') return 'deadly';
+  if (ch === '^') return 'sharp';
+  return null;
 };
+
+export const PICKUPS = { Z: 'speed', W: 'ward', N: 'magnet' };
 
 /**
  * Turn a world into a level: a static tile grid for collision and drawing,
@@ -243,6 +304,8 @@ export function parseWorld(world) {
     flag: { x: (w - 2) * TILE, y: 0, tx: w - 2, ty: h - 3 },
     checkpoints: [],
     coins: [],
+    gems: [],
+    pickups: [],       // { type, x, y, block } — block: the '@' this pops out of, else null
     enemies: [],
   };
 
@@ -256,6 +319,9 @@ export function parseWorld(world) {
       else if (ch === 'F') { lv.flag = { ...centre(tx, ty), tx, ty }; grid[ty][tx] = '.'; }
       else if (ch === 'C') { lv.checkpoints.push(centre(tx, ty)); grid[ty][tx] = '.'; }
       else if (ch === 'o') { lv.coins.push(centre(tx, ty)); grid[ty][tx] = '.'; }
+      else if (ch === 'G') { lv.gems.push(centre(tx, ty)); grid[ty][tx] = '.'; }
+      else if (PICKUPS[ch]) { lv.pickups.push({ type: PICKUPS[ch], ...centre(tx, ty), block: null }); grid[ty][tx] = '.'; }
+      else if (ch === '@') { lv.pickups.push({ type: 'heart', ...centre(tx, ty - 1), block: tx + ',' + ty }); }
       else if (ch === 'E') { lv.enemies.push({ type: 'walker', ...centre(tx, ty) }); grid[ty][tx] = '.'; }
       else if (ch === 'X') { lv.enemies.push({ type: 'spiker', ...centre(tx, ty) }); grid[ty][tx] = '.'; }
     }

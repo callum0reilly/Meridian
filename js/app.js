@@ -34,6 +34,7 @@ import ludo from './games/ludo/index.js';
 import uno from './games/uno/index.js';
 import xo from './games/xo/index.js';
 import chess from './games/chess/index.js';
+import checkers from './games/checkers/index.js';
 import snake from './games/snake/index.js';
 import flappy from './games/flappy/index.js';
 import impostor from './games/impostor/index.js';
@@ -43,7 +44,7 @@ import sims from './games/sims/index.js';
 import flashcards from './study/flashcards/index.js';
 
 const SECTIONS = [
-  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, chess, snake, flappy, impostor, bros, gta, sims] },
+  { id: 'games', label: 'Games', modules: [meridian, ludo, uno, xo, chess, checkers, snake, flappy, impostor, bros, gta, sims] },
   { id: 'study', label: 'Study', modules: [flashcards] },
 ];
 

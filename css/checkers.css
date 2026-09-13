@@ -1,0 +1,207 @@
+/* Checkers — board + side panel. Scoped to #panel-checkers. Tokens from css/app.css.
+   Laid out like chess.css on purpose; the board and pieces are what differ. */
+
+/* NB: never set `display` on #panel-checkers — see the note in meridian.css. */
+
+#panel-checkers .lobby-card .create { margin-top: 8px; }
+
+/* ---- colour chips ---- */
+#panel-checkers .chip {
+  width: 16px; height: 16px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--muted);
+}
+#panel-checkers .chip.w { background: #f7f5ef; border-color: #f7f5ef; }
+#panel-checkers .chip.b { background: #1d2331; }
+#panel-checkers .chip.draw { background: linear-gradient(90deg, #1d2331 50%, #f7f5ef 50%); }
+
+/* ---- table ---- */
+#panel-checkers .table { position: relative; flex: 1; display: flex; min-height: 0; min-width: 0; }
+
+#panel-checkers .boardwrap {
+  flex: 1; min-width: 0; display: flex;
+  flex-direction: column; align-items: center; justify-content: center;
+  gap: 14px; padding: 20px; overflow: auto;
+  background: radial-gradient(ellipse at 50% 40%, #1a2336 0%, #131a29 60%, #0e1420 100%);
+}
+
+#panel-checkers .banner {
+  flex: none; padding: 9px 16px; border-radius: 8px;
+  background: rgba(255,138,138,.12); border: 1px solid var(--danger);
+  color: var(--danger); font-size: 13px;
+}
+#panel-checkers .banner[hidden] { display: none; }
+
+#panel-checkers .status {
+  flex: none; min-height: 20px;
+  font-size: 12px; text-transform: uppercase; letter-spacing: .1em;
+  color: rgba(255,255,255,.5);
+}
+
+/* ---- the board ----
+   Sized off whichever axis is tighter, so it is always square and always fits
+   without scrolling. 170px is the header, the padding and the status line. */
+#panel-checkers .board {
+  flex: none;
+  width: min(calc(100vh - 170px), 100%, 640px);
+  aspect-ratio: 1;
+  display: grid;
+  grid-template: repeat(8, 1fr) / repeat(8, 1fr);
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 0 0 1px var(--line), 0 18px 50px rgba(0,0,0,.45);
+  /* Dragging a piece must not scroll the page or select text on the way. */
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+
+#panel-checkers .sq {
+  position: relative; padding: 0; margin: 0;
+  width: 100%; height: 100%; min-width: 0; min-height: 0;
+  border: none; border-radius: 0;
+  display: flex; align-items: center; justify-content: center;
+  cursor: default;
+}
+#panel-checkers .sq.light { background: #dde4ee; }
+#panel-checkers .sq.dark { background: #5d7294; }
+#panel-checkers .sq.movable { cursor: grab; }
+#panel-checkers .sq.target { cursor: pointer; }
+#panel-checkers .sq:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; z-index: 2; }
+
+/* Square tints sit on ::before, under the piece. Later rules win when a square
+   is several things at once: selected beats last move. */
+#panel-checkers .sq::before { content: ''; position: absolute; inset: 0; pointer-events: none; }
+#panel-checkers .sq.last::before { background: rgba(255, 196, 60, .35); }
+#panel-checkers .sq.took::before {
+  background: radial-gradient(circle, rgba(255,110,90,.45) 0%, rgba(255,110,90,.2) 40%, transparent 65%);
+}
+#panel-checkers .sq.hop::before, #panel-checkers .sq.selected::before { background: rgba(74, 158, 255, .55); }
+
+/* Where the piece can go, on ::after over everything. */
+#panel-checkers .sq::after { content: ''; position: absolute; pointer-events: none; z-index: 1; border-radius: 50%; }
+#panel-checkers .sq.target::after { width: 30%; height: 30%; background: rgba(12,18,30,.35); }
+#panel-checkers .sq.target:hover::after { background: rgba(12,18,30,.6); }
+
+#panel-checkers .num {
+  position: absolute; top: 5%; left: 7%; pointer-events: none;
+  font-size: clamp(8px, 1.2vmin, 11px); font-weight: 700; line-height: 1;
+  color: rgba(221,228,238,.55);
+}
+
+/* ---- pieces ---- */
+#panel-checkers .pc {
+  position: relative; width: 100%; height: 100%;
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+#panel-checkers .sq.lifted .pc { opacity: .3; }
+
+/* A disc with a raised rim: the ring is a second, smaller circle inside. */
+#panel-checkers .man {
+  position: relative; width: 76%; height: 76%; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 3px 0 rgba(0,0,0,.35), 0 5px 10px rgba(0,0,0,.3);
+}
+#panel-checkers .man::before {
+  content: ''; position: absolute; inset: 16%; border-radius: 50%;
+  border: 2px solid; opacity: .45;
+}
+#panel-checkers .man.w { background: #f7f5ef; }
+#panel-checkers .man.w::before { border-color: #8a93a3; }
+#panel-checkers .man.b { background: #1d2331; border: 1.5px solid #080a0f; }
+#panel-checkers .man.b::before { border-color: #8a93a3; }
+
+#panel-checkers .crown { position: relative; width: 52%; height: 52%; fill: #f2c14e; stroke: #6b4c0b; stroke-width: 1.2; stroke-linejoin: round; }
+
+/* Pieces a half-walked jump has already gone over. They only come off the
+   board when the move is played, so just fade them. */
+#panel-checkers .sq.taking .man { opacity: .35; }
+
+/* The piece under your pointer while dragging. Fixed to the viewport and
+   moved by transform, so it never reflows anything. */
+#panel-checkers .dragpiece {
+  position: fixed; left: 0; top: 0; z-index: 200;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none; will-change: transform;
+  filter: drop-shadow(0 8px 10px rgba(0,0,0,.45));
+}
+
+/* ---- side panel ---- */
+#panel-checkers aside {
+  width: 300px; flex: none; background: var(--panel);
+  border-left: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0;
+}
+#panel-checkers .turnbar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--line);
+}
+#panel-checkers .turnbar .who { flex: 1; font-weight: 600; }
+#panel-checkers .turnbar .sub { color: var(--muted); font-size: 12px; font-weight: 400; }
+
+#panel-checkers .offer {
+  margin: 12px 14px 0; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--accent); background: rgba(74,158,255,.1); font-size: 13px;
+}
+#panel-checkers .offer[hidden] { display: none; }
+#panel-checkers .offer .row { margin-top: 8px; }
+#panel-checkers .offer .row button { flex: 1; padding: 7px; font-size: 13px; }
+
+#panel-checkers .actions { display: flex; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line); }
+#panel-checkers .actions:empty { display: none; }
+#panel-checkers .actions button { flex: 1; padding: 8px; font-size: 13px; }
+#panel-checkers .actions .hint { flex: 1; margin: 0; }
+
+#panel-checkers .scorehead, #panel-checkers .movehead {
+  padding: 12px 14px 6px; font-size: 11px; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--muted);
+}
+#panel-checkers .scores { list-style: none; margin: 0; padding: 0 14px; flex: none; }
+#panel-checkers .scores li {
+  display: flex; align-items: center; gap: 9px; padding: 6px 0;
+  border-bottom: 1px solid var(--line); font-size: 13px;
+}
+#panel-checkers .scores li.gone { opacity: .45; }
+#panel-checkers .scores .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#panel-checkers .scores .you { color: var(--muted); font-size: 11px; }
+#panel-checkers .scores .pts { font-weight: 700; font-variant-numeric: tabular-nums; }
+#panel-checkers .scores .drawrow { color: var(--muted); border-bottom: none; }
+#panel-checkers .scores .drawrow .pts { font-weight: 500; }
+
+#panel-checkers .moves {
+  flex: 1; overflow-y: auto; list-style: none; margin: 0; padding: 0 14px 14px;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+#panel-checkers .moves li {
+  display: grid; grid-template-columns: 36px 1fr 1fr;
+  padding: 4px 0; border-bottom: 1px solid var(--line);
+}
+#panel-checkers .moves .no { color: var(--muted); }
+#panel-checkers .moves li:last-child:not(.res) span:last-child:empty::after { content: '…'; color: var(--muted); }
+#panel-checkers .moves .res, #panel-checkers .moves .none {
+  display: block; text-align: center; color: var(--muted); border-bottom: none; padding-top: 8px;
+}
+#panel-checkers .moves .res { font-weight: 700; color: var(--text); }
+
+/* ---- result overlay ---- */
+#panel-checkers .over {
+  position: absolute; inset: 0; z-index: 30;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(8,12,20,.72); backdrop-filter: blur(3px);
+}
+#panel-checkers .card2 {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+  padding: 24px 26px; text-align: center; width: min(400px, calc(100% - 32px));
+  max-height: calc(100% - 32px); overflow-y: auto;
+}
+#panel-checkers .card2 h2 { margin: 0 0 6px; font-size: 22px; }
+#panel-checkers .card2 .sub { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+#panel-checkers .card2 > button { width: 100%; padding: 11px; }
+#panel-checkers .card2 > button + button, #panel-checkers .card2 .hint + button { margin-top: 8px; }
+
+@media (max-width: 820px) {
+  #panel-checkers .table { flex-direction: column; }
+  #panel-checkers .boardwrap { padding: 12px; gap: 10px; }
+  #panel-checkers .board { width: min(94vw, 58vh); }
+  #panel-checkers aside {
+    width: 100%; border-left: none; border-top: 1px solid var(--line);
+    max-height: 38%; overflow-y: auto;
+  }
+  #panel-checkers .movehead, #panel-checkers .moves { display: none; }
+}

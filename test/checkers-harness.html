@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Checkers harness</title>
+<link rel="stylesheet" href="../css/app.css">
+<link rel="stylesheet" href="../css/checkers.css">
+<style>
+  body { overflow: auto; }
+  .rig { display: flex; gap: 10px; padding: 10px; height: 760px; }
+  .seatbox { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; min-width: 0; }
+  .seatbox h3 { margin: 0; padding: 6px 10px; background: var(--panel-2); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .seatbox .hdr { display: flex; gap: 8px; padding: 6px 10px; background: var(--panel); font-size: 12px; }
+  #panel-checkers { flex: 1; min-height: 0; }
+  #results { padding: 10px 16px; font: 13px ui-monospace, Menlo, monospace; }
+  #results div { padding: 2px 0; }
+  .ok { color: #2fbf6b; }
+  .bad { color: #ff8a8a; font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="rig">
+  <div class="seatbox"><h3>Host (created the room)</h3><div class="hdr" id="hdrA"></div><div id="panel-checkers" class="panel" data-who="A"></div></div>
+  <div class="seatbox"><h3>Joiner (entered the code)</h3><div class="hdr" id="hdrB"></div><div id="panel-checkers" class="panel" data-who="B"></div></div>
+</div>
+<div class="rig">
+  <div class="seatbox"><h3>Same device</h3><div class="hdr" id="hdrL"></div><div id="panel-checkers" class="panel" data-who="L"></div></div>
+</div>
+<div id="results"></div>
+
+<script type="module">
+import { install } from './fake-peer.js';
+install();                                  // must land before any room is made
+const checkers = (await import('../js/games/checkers/index.js')).default;
+const { START_FEN, fromFEN } = await import('../js/games/checkers/rules.js');
+
+// Resign, draw and leave all ask first. Say yes to all of it.
+window.confirm = () => true;
+
+const out = document.getElementById('results');
+let failed = 0;
+const say = (msg, cls = '') => {
+  const d = document.createElement('div');
+  d.className = cls; d.textContent = msg; out.appendChild(d);
+  console.log(msg);
+};
+const check = (cond, msg) => {
+  if (!cond) failed++;
+  say((cond ? 'PASS  ' : 'FAIL  ') + msg, cond ? 'ok' : 'bad');
+};
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function waitFor(fn, what, ms = 3000) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) throw new Error('timed out waiting for ' + what);
+    await sleep(20);
+  }
+}
+
+const A = document.querySelector('[data-who="A"]');
+const B = document.querySelector('[data-who="B"]');
+const L = document.querySelector('[data-who="L"]');
+checkers.init(A, document.getElementById('hdrA'));
+checkers.init(B, document.getElementById('hdrB'));
+checkers.init(L, document.getElementById('hdrL'));
+
+const $ = (root, sel) => root.querySelector(sel);
+const $$ = (root, sel) => [...root.querySelectorAll(sel)];
+const sq = (root, n) => $(root, `.sq[data-n="${n}"]`);
+
+/** What each square shows, as piece letters and dots, top-left first. */
+const boardOf = (root) => $$(root, '.sq').map((s) => s.dataset.face || '.').join('');
+const at = (root, n) => sq(root, n).dataset.face || '';
+const targets = (root) => $$(root, '.sq.target').map((s) => Number(s.dataset.n)).sort((a, b) => a - b).join(',');
+
+/** Click-to-move by book notation: click the piece, then where it ends up.
+ *  (A click with detail 0 — the path the keyboard uses.) */
+async function move(root, note, others) {
+  const squares = note.split(/[-x]/);
+  const before = boardOf(root);
+  sq(root, squares[0]).click();
+  check(sq(root, squares[0]).classList.contains('selected'), `${squares[0]} is picked up`);
+  sq(root, squares.at(-1)).click();
+  await waitFor(() => [root, ...others].every((p) => boardOf(p) !== before), `${note} to land`);
+}
+
+/** Drag-to-move, with real pointer events and coordinates. */
+async function dragMove(root, from, to, others) {
+  const before = boardOf(root);
+  const a = sq(root, from).getBoundingClientRect();
+  const b = sq(root, to).getBoundingClientRect();
+  const ev = (type, x, y, target) => target.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, clientX: x, clientY: y,
+  }));
+  ev('pointerdown', a.x + a.width / 2, a.y + a.height / 2, sq(root, from));
+  ev('pointermove', a.x + a.width / 2 + 20, a.y + a.height / 2 + 20, window);
+  check(!!$(root, '.dragpiece'), `dragging ${from} shows the piece under the pointer`);
+  ev('pointermove', b.x + b.width / 2, b.y + b.height / 2, window);
+  ev('pointerup', b.x + b.width / 2, b.y + b.height / 2, window);
+  check(!$(root, '.dragpiece'), 'the dragged piece is gone once dropped');
+  await waitFor(() => [root, ...others].every((p) => boardOf(p) !== before), `${from}-${to} drag to land`);
+}
+
+try {
+  /* ================= online: create + join ================= */
+  $(A, '.name').value = 'Callum';
+  $(A, '.create').click();
+  await waitFor(() => $(A, '.codeval')?.textContent?.length === 5, 'room code');
+  const code = $(A, '.codeval').textContent;
+  check(/^[A-Z0-9]{5}$/.test(code), `host created a room: ${code}`);
+  check($(A, '.start').disabled, 'start is disabled with one player');
+
+  $(B, '.name').value = 'Mate';
+  $(B, '.codein').value = code;
+  $(B, '.join').click();
+  await waitFor(() => $(A, '.seats')?.children.length === 2, 'both in the lobby');
+  check(!$(A, '.start').disabled, 'start is enabled at two players');
+  check($(B, '.start').hidden, 'only the host can start');
+
+  $(A, '.start').click();
+  await waitFor(() => [A, B].every((p) => $$(p, '.sq').length === 64), 'both boards');
+
+  const START = fromFEN(START_FEN).board.map((p) => p || '.').join('');
+  check([A, B].every((p) => boardOf(p) === START), 'both boards show the start position');
+  check($$(A, 'button.sq').length === 32, 'only the 32 dark squares are buttons');
+
+  const aBlack = $(A, '.turnwho').textContent.includes('you are Black');
+  let K = aBlack ? A : B;   // blacK
+  let W = aBlack ? B : A;
+  check($(W, '.turnwho').textContent.includes('you are White'), 'the other player is White');
+
+  // ---- orientation ----
+  check(sq(W, 29).style.gridRow === '8' && sq(W, 29).style.gridColumn === '1', 'White sees square 29 bottom-left');
+  check(sq(K, 29).style.gridRow === '1' && sq(K, 29).style.gridColumn === '8', 'Black sees the board from their side');
+  check(sq(K, 4).style.gridRow === '8' && sq(K, 4).style.gridColumn === '1', 'with their own single corner bottom-left');
+
+  // ---- turn ownership ----
+  const movable = (root) => $$(root, '.sq.movable').map((s) => Number(s.dataset.n)).sort((a, b) => a - b).join(',');
+  check(movable(K) === '9,10,11,12', `Black moves first, and only pieces with a move are live (${movable(K)})`);
+  check(movable(W) === '', 'White cannot touch anything yet');
+  sq(W, 22).click();
+  check(!sq(W, 22).classList.contains('selected'), 'clicking out of turn picks nothing up');
+
+  // ---- move hints ----
+  sq(K, 11).click();
+  check(targets(K) === '15,16', `a man shows its two forward moves (${targets(K)})`);
+  sq(K, 11).click();
+  check(targets(K) === '', 'clicking the piece again puts it down');
+
+  // ---- a forced capture, then a double jump ----
+  await move(K, '9-13', [W]);
+  check(at(W, 13) === 'b' && at(W, 9) === '', 'the move reached the other screen');
+  check(sq(W, 9).classList.contains('last') && sq(W, 13).classList.contains('last'), 'the last move is highlighted');
+  check(movable(K) === '' && movable(W) !== '', 'the turn passed');
+
+  await dragMove(W, 23, 19, [K]);
+  check(at(K, 19) === 'w', 'a dragged move lands too');
+  await move(K, '6-9', [W]);
+  await move(W, '19-16', [K]);
+
+  check($(K, '.status').textContent === 'Your move — you must capture', 'Black is told a capture is compulsory');
+  check(!sq(K, 13).classList.contains('movable'), 'a piece that could only step is not offered');
+  check($(W, '.status').textContent.endsWith('is thinking…'), 'the waiting player just sees them thinking');
+  sq(K, 13).click();
+  check(!sq(K, 13).classList.contains('selected'), 'and cannot be picked up');
+  await move(K, '12x19', [W]);
+  check(at(W, 16) === '' && at(W, 19) === 'b', 'the captured man is gone on both screens');
+
+  check(movable(W) === '24', 'White\'s only legal move is the double jump');
+  sq(W, 24).click();
+  check(targets(W) === '6,15', `the jump shows its hop and where it ends (${targets(W)})`);
+  sq(W, 6).click();
+  await waitFor(() => at(K, 6) === 'w', 'the double jump to land');
+  check(at(K, 19) === '' && at(K, 10) === '' && at(K, 24) === '', 'one click took both pieces');
+  check($$(K, '.sq.took').length === 2, 'the other screen marks where both were taken');
+  check($$(W, '.moves li').at(-1).textContent.includes('24x15x6'), 'the move list writes every landing square');
+
+  // ---- resigning ----
+  $(W, '.resignbtn').click();   // out of turn is fine
+  await waitFor(() => [A, B].every((p) => $(p, '.over')), 'the result card');
+  check($(K, '.over h2').textContent === `${aBlack ? 'Callum' : 'Mate'} wins`, 'the card names Black as the winner');
+  check($(K, '.over').textContent.includes('resigned'), 'and says how');
+  check($(A, '.go') && !$(B, '.go'), 'only the host can start a rematch');
+  check($$(K, '.sq.movable').length === 0, 'a finished board is inert');
+  $(B, '.peek').click();
+  check(!$(B, '.over'), '"See the board" hides the card');
+
+  // ---- rematch swaps colours ----
+  $(A, '.go').click();
+  await waitFor(() => [A, B].every((p) => boardOf(p) === START && !$(p, '.over')), 'a fresh board');
+  [K, W] = [W, K];
+  check($(K, '.turnwho').textContent.includes('you are Black'), 'colours swapped for the rematch');
+  check(sq(K, 29).style.gridRow === '1', 'and the boards turned round with them');
+  check($$(K, '.scores .pts').map((p) => p.textContent).join(',') !== '0,0,0', 'the score carried over');
+
+  // ---- draw offer ----
+  $(W, '.drawbtn').click();
+  await waitFor(() => !$(K, '.offer').hidden, 'the offer to arrive');
+  check($(W, '.drawbtn').disabled && $(W, '.drawbtn').textContent === 'Draw offered', 'the offerer sees it pending');
+  check($(W, '.offer').hidden, 'the offerer is not asked to answer their own offer');
+  $(K, '.declinedraw').click();
+  await waitFor(() => $(K, '.offer').hidden && !$(W, '.drawbtn').disabled, 'the decline');
+  check(true, 'declining clears the offer on both screens');
+
+  $(K, '.drawbtn').click();
+  await waitFor(() => !$(W, '.offer').hidden, 'the second offer');
+  $(W, '.acceptdraw').click();
+  await waitFor(() => [A, B].every((p) => $(p, '.over')), 'the drawn result');
+  check($(A, '.over h2').textContent === 'Draw', 'an accepted offer draws');
+  check($(A, '.drawrow .pts').textContent === '1', 'the draw is counted');
+  check(boardOf(A) === boardOf(B), 'host and joiner render the same board');
+
+  // ---- disconnect ----
+  $(A, '.go').click();
+  await waitFor(() => [A, B].every((p) => !$(p, '.over')), 'game 3');
+  document.querySelector('#hdrB .leave').click();
+  await waitFor(() => !$(A, '.banner').hidden, 'the disconnect banner');
+  check($(A, '.banner').textContent.includes('Mate disconnected'), 'the host is told the joiner left');
+  check($$(A, '.sq.movable').length === 0, 'and the board freezes');
+  check(!!$(B, '.lobby .create'), 'the joiner is back in the lobby');
+
+  /* ================= same device ================= */
+  $(L, '.local').click();
+  await waitFor(() => $$(L, '.sq').length === 64, 'the local board');
+  check(boardOf(L) === START, 'a local game starts at once, no room');
+  check(document.querySelector('#hdrL .leave').textContent === 'End game', 'the header offers to end the game');
+  check($(L, '.status').textContent === 'Black to move', 'Black is to move');
+  check(sq(L, 29).style.gridRow === '8', 'White sits at the bottom, as in the book diagram');
+
+  const line = ['9-14', '22-17', '11-15', '17-13', '12-16', '23-19', '16x23'];
+  for (const [i, note] of line.entries()) {
+    await move(L, note, []);
+    if (i === 0) {
+      check($(L, '.status').textContent === 'White to move', 'then White moves on the same screen');
+      check(sq(L, 29).style.gridRow === '8', 'and the board does not flip');
+    }
+  }
+
+  // White can take with 26, or jump twice from 27 — to 9 or to 11, both via 18.
+  check($(L, '.status').textContent === 'White to move — you must capture', 'the capture is flagged locally too');
+  sq(L, 27).click();
+  check(targets(L) === '9,11,18', `both routes show their shared hop and their ends (${targets(L)})`);
+  const before = boardOf(L);
+  sq(L, 18).click();
+  check(boardOf(L) === before, 'clicking the shared hop plays nothing yet');
+  check(sq(L, 18).classList.contains('hop') && sq(L, 27).classList.contains('selected'), 'it walks the piece there');
+  check($$(L, '.sq.taking').length === 1, 'and fades the piece it has jumped');
+  check(targets(L) === '9,11', `leaving the two ways on (${targets(L)})`);
+  sq(L, 11).click();
+  await waitFor(() => at(L, 11) === 'w', 'the chosen route');
+  check(at(L, 23) === '' && at(L, 15) === '' && at(L, 14) === 'b', 'the route taken is the one clicked');
+  check($$(L, '.moves li').at(-1).textContent.includes('27x18x11'), 'and is written as 27x18x11');
+
+  // Resign resigns for whoever is to move — Black here.
+  $(L, '.resignbtn').click();
+  await waitFor(() => $(L, '.over'), 'the local result');
+  check($(L, '.over h2').textContent === 'White wins' && $(L, '.over').textContent.includes('Black resigned'),
+    'resigning on one laptop resigns for the side to move');
+  $(L, '.go').click();
+  await waitFor(() => boardOf(L) === START && !$(L, '.over'), 'a local rematch');
+  check($(L, '.status').textContent === 'Black to move' && sq(L, 29).style.gridRow === '8',
+    'a local rematch keeps the board and Black to move');
+  check($$(L, '.scores .pts').map((p) => p.textContent).join(',') === '0,1,0', 'with the tally kept');
+
+  $(L, '.drawbtn').click();
+  await waitFor(() => $(L, '.over'), 'the local draw');
+  check($(L, '.over h2').textContent === 'Draw', '"Agree a draw" ends it straight away on one laptop');
+
+  document.querySelector('#hdrL .leave').click();
+  check(!!$(L, '.lobby .local'), 'ending the game returns to the lobby');
+} catch (err) {
+  failed++;
+  say('THREW  ' + err.message, 'bad');
+  console.error(err);
+}
+
+say(failed ? `${failed} check(s) failed` : 'all checks passed', failed ? 'bad' : 'ok');
+document.title = failed ? `FAILED (${failed})` : 'ALL PASSED';
+document.body.dataset.done = failed ? 'fail' : 'pass';
+</script>
+</body>
+</html>

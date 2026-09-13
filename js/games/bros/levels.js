@@ -20,8 +20,13 @@
 //   G  gem — three per world, tucked off the required path
 //   Z  speed surge pickup (timed)    W  spike ward pickup (timed)
 //   N  coin magnet pickup (timed)
+//   u  updraft (air that lifts you; columns of it over a pit are the lift)
+//   M  moving platform, patrolling sideways along the '-' rail on its row
+//   V  moving platform, patrolling up and down the ':' rail in its column
+//   -  :  rails (air — they only say where a mover goes)
 //   E  walker enemy — stomp it
 //   X  spiker enemy — do NOT stomp it
+//   Y  flyer — bobs back and forth in the air; stompable from above
 //   C  checkpoint pennant (per player: touch it and you respawn there)
 //   S  where players start
 //   F  the goal flag
@@ -56,12 +61,17 @@ const _ = (n) => '.'.repeat(n);   // air
 const g = (n) => '#'.repeat(n);   // ground
 
 /** Overlay features on a finished map by coordinate: put(x, y, 'G') writes a
- *  string rightwards from column x of row y. */
+ *  string rightwards from column x of row y; rect fills a box inclusive. */
 function edit(map, fn) {
   const rows = map.map((r) => [...r]);
-  fn((x, y, s) => { for (let i = 0; i < s.length; i++) rows[y][x + i] = s[i]; });
+  const put = (x, y, s) => { for (let i = 0; i < s.length; i++) rows[y][x + i] = s[i]; };
+  const rect = (x0, y0, x1, y1, ch) => { for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) rows[y][x] = ch; };
+  fn(put, rect);
   return rows.map((r) => r.join(''));
 }
+
+/** A world drawn from scratch by coordinate, on an empty sky. */
+const build = (w, fn) => edit(Array.from({ length: ROWS }, () => _(w)), fn);
 
 export const WORLDS = [
   {
@@ -251,6 +261,54 @@ export const WORLDS = [
       put(100, 13, 'Z');
     }),
   },
+
+  {
+    id: 'isles',
+    name: 'Windswept Isles',
+    sub: 'Floating islands, gusting wind. Ride the updrafts.',
+    ice: false,
+    wind: 0.035,       // gust strength; the direction swings with the clock
+    lives: 5,
+    par: 100,
+    palette: {
+      sky: ['#3f7fc9', '#d9efff'],
+      hillFar: '#9dc7ee', hillNear: '#c6e2f7',
+      groundTop: '#5ccc7a', ground: '#7a6a5a', groundDark: '#5d5044',
+      brick: '#b9a58f', brickDark: '#8c7b68',
+      block: '#ffb224', blockDead: '#8f7a52',
+      pillar: '#6f8fb5', pillarDark: '#54708f',
+      platform: '#c8b79e',
+      spike: '#c9d3e0',
+      lava: null, lavaGlow: null,
+      flag: '#e5484d',
+    },
+    map: build(150, (put, rect) => {
+      // Island A — the launch. Wide, flat, a taste of the wind.
+      rect(0, 15, 18, 16, '#'); put(2, 14, 'S'); put(6, 13, 'ooo'); put(14, 13, 'oo');
+      // Island B
+      rect(22, 14, 34, 16, '#'); put(26, 12, 'oo'); put(29, 12, 'Z'); put(31, 13, 'E');
+      // Island C, with a flyer to duck or stomp
+      rect(38, 13, 46, 16, '#'); put(42, 10, 'Y'); put(40, 11, 'ooo');
+      // The first updraft: a column of lift over open sky, a gem at its crown
+      rect(47, 5, 49, 16, 'u'); put(49, 3, 'G');
+      // Island D — a tall pillar with a spring on top
+      rect(52, 9, 62, 16, '#'); put(54, 7, 'ooo'); put(57, 8, 'E'); put(60, 9, '!'); put(60, 2, 'G');
+      // Island E — checkpoint, two walkers, a heart in the blocks
+      rect(66, 11, 78, 16, '#'); put(72, 10, 'C'); put(69, 10, 'E'); put(75, 10, 'E'); put(70, 8, '?@?');
+      // The mover: rides the rail from E to F over nothing at all
+      put(80, 11, 'M'); put(81, 11, '------------');
+      // Island F — flyer overhead, a spring to the second-highest gem
+      rect(94, 11, 104, 16, '#'); put(99, 8, 'Y'); put(96, 8, '?'); put(97, 10, 'N'); put(103, 11, '!'); put(103, 4, 'G');
+      // Island G — spikes and a walker on a low island
+      rect(108, 13, 120, 16, '#'); put(112, 12, '^^'); put(116, 12, 'E'); put(110, 10, 'oo'); put(118, 10, 'oo');
+      // The second updraft, up to the high island
+      rect(121, 3, 123, 16, 'u');
+      // Island H — high ground with a spiker
+      rect(126, 8, 138, 16, '#'); put(129, 7, 'E'); put(132, 7, 'X'); put(128, 5, 'oooo');
+      // Island I — the flag
+      rect(142, 10, 149, 16, '#'); put(146, 9, 'F');
+    }),
+  },
 ];
 
 export const WORLD_BY_ID = new Map(WORLDS.map((w) => [w.id, w]));
@@ -281,7 +339,33 @@ export const hazardAt = (lv, tx, ty) => {
   return null;
 };
 
+export const updraftAt = (lv, tx, ty) => tileAt(lv, tx, ty) === 'u';
+
 export const PICKUPS = { Z: 'speed', W: 'ward', N: 'magnet' };
+export const ENEMY_GLYPHS = { E: 'walker', X: 'spiker', Y: 'flyer' };
+
+/* ---- the clock-driven scenery ----
+   Movers and wind are pure functions of the shared step count, so every
+   machine computes exactly the same platform position from the same number
+   and nobody rides a platform that's 80ms behind the one they see. */
+
+export const MOVER_W = TILE * 3;
+export const MOVER_H = 10;
+export const MOVER_SPEED = 1.25;      // px per step
+
+/** Where a mover is at a given step: a triangle wave along its rail. */
+export function moverPos(m, step) {
+  const dist = Math.hypot(m.x1 - m.x0, m.y1 - m.y0);
+  if (dist === 0) return { x: m.x0, y: m.y0 };
+  const half = dist / MOVER_SPEED;
+  const t = ((step % (half * 2)) + half * 2) % (half * 2);
+  const k = t < half ? t / half : 2 - t / half;
+  return { x: m.x0 + (m.x1 - m.x0) * k, y: m.y0 + (m.y1 - m.y0) * k };
+}
+
+/** Sideways push this step, from a world's gust strength: swings between
+ *  blowing left and right over about ten seconds. */
+export const windAt = (world, step) => (world.wind ? world.wind * Math.sin(step / 150) : 0);
 
 /**
  * Turn a world into a level: a static tile grid for collision and drawing,
@@ -307,9 +391,27 @@ export function parseWorld(world) {
     gems: [],
     pickups: [],       // { type, x, y, block } — block: the '@' this pops out of, else null
     enemies: [],
+    movers: [],        // { x0, y0, x1, y1 } rail ends, in px (platform centre)
   };
 
   const centre = (tx, ty) => ({ x: tx * TILE + TILE / 2, y: ty * TILE + TILE / 2 });
+
+  // Movers first, while their rails are still in the grid: a rail is the run
+  // of rail glyphs touching the mover along its axis.
+  const rail = (tx, ty, dx, dy, glyph) => {
+    let a = 0, b = 0;
+    while (grid[ty - dy * (a + 1)]?.[tx - dx * (a + 1)] === glyph) a++;
+    while (grid[ty + dy * (b + 1)]?.[tx + dx * (b + 1)] === glyph) b++;
+    return { ...centre(tx - dx * a, ty - dy * a), end: centre(tx + dx * b, ty + dy * b) };
+  };
+  for (let ty = 0; ty < h; ty++) {
+    for (let tx = 0; tx < w; tx++) {
+      const ch = grid[ty][tx];
+      if (ch !== 'M' && ch !== 'V') continue;
+      const r = ch === 'M' ? rail(tx, ty, 1, 0, '-') : rail(tx, ty, 0, 1, ':');
+      lv.movers.push({ x0: r.x, y0: r.y, x1: r.end.x, y1: r.end.y });
+    }
+  }
 
   for (let ty = 0; ty < h; ty++) {
     for (let tx = 0; tx < w; tx++) {
@@ -322,8 +424,8 @@ export function parseWorld(world) {
       else if (ch === 'G') { lv.gems.push(centre(tx, ty)); grid[ty][tx] = '.'; }
       else if (PICKUPS[ch]) { lv.pickups.push({ type: PICKUPS[ch], ...centre(tx, ty), block: null }); grid[ty][tx] = '.'; }
       else if (ch === '@') { lv.pickups.push({ type: 'heart', ...centre(tx, ty - 1), block: tx + ',' + ty }); }
-      else if (ch === 'E') { lv.enemies.push({ type: 'walker', ...centre(tx, ty) }); grid[ty][tx] = '.'; }
-      else if (ch === 'X') { lv.enemies.push({ type: 'spiker', ...centre(tx, ty) }); grid[ty][tx] = '.'; }
+      else if (ENEMY_GLYPHS[ch]) { lv.enemies.push({ type: ENEMY_GLYPHS[ch], ...centre(tx, ty) }); grid[ty][tx] = '.'; }
+      else if (ch === 'M' || ch === 'V' || ch === '-' || ch === ':') { grid[ty][tx] = '.'; }
     }
   }
 

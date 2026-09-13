@@ -27,7 +27,8 @@
 
 import {
   TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld,
-  tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt,
+  tileAt, solidAt, oneWayAt, hazardAt, springAt, blockAt, updraftAt,
+  moverPos, windAt, MOVER_W, MOVER_H,
 } from './levels.js';
 
 export const STEP_MS = 1000 / 60;
@@ -77,8 +78,13 @@ export const CHARACTERS = {
 };
 export const CHAR_IDS = Object.keys(CHARACTERS);
 
+/* ---- scenery ---- */
+export const UPDRAFT_LIFT = 1.0;        // per step, against gravity's 0.55
+export const UPDRAFT_MAX = -5;          // fastest rise in an updraft
+export const WIND_CAP = 1.5;            // how far past top speed a gust can push
+
 /* re-exported so index.js has one import for game data */
-export { TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt };
+export { TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, MOVER_W, MOVER_H };
 
 /* ============================== the hero ============================== */
 
@@ -98,6 +104,7 @@ export function makeBody(lv, charId, seat) {
     hp: 1,                 // 2 with a heart shard: one free hit
     buff: null,            // { type: 'speed'|'ward'|'magnet', t: steps left }
     launched: false,       // sprung: the jump-cut doesn't apply until the apex
+    ride: -1,              // index of the mover underfoot, if any
   };
 }
 
@@ -109,10 +116,11 @@ export const hasBuff = (b, type) => !!(b.buff && b.buff.type === type && b.buff.
  * @param input {{left, right, jump, held, down}} — `jump` is the *press*
  *   (edge), `held` is the key still being down; the difference is what makes
  *   tapping hop and holding soar.
+ * @param step  the shared clock, for movers and wind (0 if the world has none)
  * @returns {{bump, dead, landed, jumped, spring, hurt}} — `hurt` is a shard
  *   lost to spikes; `dead` is 'hazard' | 'pit' | null.
  */
-export function stepPlayer(b, input, lv) {
+export function stepPlayer(b, input, lv, step = 0) {
   const ev = { bump: null, dead: null, landed: false, jumped: false, spring: false, hurt: false };
   const ch = CHARACTERS[b.charId] || CHARACTERS.rex;
 
@@ -127,6 +135,14 @@ export function stepPlayer(b, input, lv) {
 
   if (b.inv > 0) b.inv -= 1;
   if (b.buff && --b.buff.t <= 0) b.buff = null;
+
+  // Carried by the platform underfoot: it moved since last step, so do we.
+  if (b.ride >= 0 && b.onGround && lv.movers[b.ride]) {
+    const m = lv.movers[b.ride];
+    const now = moverPos(m, step), was = moverPos(m, step - 1);
+    b.x += now.x - was.x;
+    b.y += now.y - was.y;
+  }
 
   const surge = hasBuff(b, 'speed');
   const speed = ch.speed * (surge ? SPEED_MULT : 1);
@@ -146,6 +162,14 @@ export function stepPlayer(b, input, lv) {
   if (Math.abs(b.vx) > speed) b.vx = speed * Math.sign(b.vx);
   if (!dir && Math.abs(b.vx) < 0.05) b.vx = 0;
 
+  // The wind: a shove in the air, a lean on the ground, past the usual cap.
+  const wind = windAt(lv.world, step);
+  if (wind) {
+    b.vx += wind * (b.onGround ? 0.3 : 1);
+    const cap = speed + WIND_CAP;
+    if (Math.abs(b.vx) > cap) b.vx = cap * Math.sign(b.vx);
+  }
+
   // Coyote time + a buffered jump: the two standard mercies. Pressing jump a
   // few steps early or leaving the ledge a few steps ago both still count.
   b.coyote = b.onGround ? COYOTE : Math.max(0, b.coyote - 1);
@@ -161,20 +185,44 @@ export function stepPlayer(b, input, lv) {
   if (b.launched && b.vy >= 0) b.launched = false;
   if (!input.held && !b.launched && b.vy < JUMP_CUT) b.vy = JUMP_CUT;
 
-  // Down through a one-way platform, on request.
-  if (input.down && b.onGround && standingOnOneWay(b, lv)) {
+  // Down through a one-way platform (or off a mover), on request.
+  if (input.down && b.onGround && (b.ride >= 0 || standingOnOneWay(b, lv))) {
     b.dropT = 12;
     b.onGround = false;
+    b.ride = -1;
   }
   if (b.dropT > 0) b.dropT -= 1;
 
   const grav = ch.floaty && b.vy > 0 ? FLOAT_GRAVITY : GRAVITY;
   b.vy = Math.min(b.vy + grav, MAX_FALL);
+  if (updraftAt(lv, Math.floor(b.x / TILE), Math.floor(b.y / TILE))) {
+    b.vy = Math.max(b.vy - UPDRAFT_LIFT, UPDRAFT_MAX);
+    b.launched = false;
+  }
 
+  const prevBottom = b.y + HH;
   moveX(b, lv);
   const res = moveY(b, lv);
   ev.bump = res.bump;
   ev.landed = res.landed;
+
+  // Movers are one-way platforms that happen to be somewhere else each step.
+  b.ride = -1;
+  if (!res.ground && b.vy >= 0 && b.dropT <= 0) {
+    for (let i = 0; i < lv.movers.length; i++) {
+      const p = moverPos(lv.movers[i], step);
+      const top = p.y - MOVER_H / 2;
+      const moved = Math.abs(p.y - moverPos(lv.movers[i], step - 1).y);
+      if (Math.abs(b.x - p.x) >= MOVER_W / 2 + HW - 3) continue;
+      if (prevBottom > top + 4 + moved || b.y + HH < top) continue;
+      b.y = top - HH;
+      ev.landed = !b.onGround;
+      b.onGround = true;
+      b.vy = 0;
+      b.ride = i;
+      break;
+    }
+  }
 
   if (b.onGround && standingOnSpring(b, lv)) {
     b.vy = -SPRING_VY;
@@ -271,7 +319,7 @@ function moveX(b, lv) {
 function moveY(b, lv) {
   const prevBottom = b.y + HH;
   b.y += b.vy;
-  const out = { landed: false, bump: null };
+  const out = { landed: false, bump: null, ground: false };
   const tx0 = Math.floor((b.x - HW + EPS) / TILE);
   const tx1 = Math.floor((b.x + HW - EPS) / TILE);
 
@@ -287,6 +335,7 @@ function moveY(b, lv) {
     if (hit) {
       b.y = ty * TILE - HH;
       out.landed = !b.onGround;
+      out.ground = true;
       b.onGround = true;
       b.vy = 0;
     } else {
@@ -409,22 +458,33 @@ export function touchFlag(b, lv) {
 /* ============================== enemies ============================== */
 
 export const ENEMY = {
-  walker: { w: 26, h: 22, speed: 0.8 },
-  spiker: { w: 26, h: 20, speed: 0.55 },
+  walker: { w: 26, h: 22, speed: 0.8,  stomp: true },
+  spiker: { w: 26, h: 20, speed: 0.55, stomp: false },
+  flyer:  { w: 26, h: 18, speed: 1.0,  stomp: true, range: TILE * 4, bob: 18 },
 };
 
 export function makeEnemies(lv) {
   return lv.enemies.map((e, i) => ({
     i, type: e.type, x: e.x, y: e.y, dir: -1, vy: 0, alive: true,
+    baseY: e.y, x0: e.x - (ENEMY[e.type].range || 0), x1: e.x + (ENEMY[e.type].range || 0),
   }));
 }
 
 /** Enemies patrol: walk until a wall, a ledge, or something pointy, then turn.
- *  They obey the same gravity as everyone, so a spawn in mid-air just lands. */
-export function stepEnemy(e, lv) {
+ *  They obey the same gravity as everyone, so a spawn in mid-air just lands.
+ *  Flyers ignore all that and bob along a fixed beat of the clock. */
+export function stepEnemy(e, lv, step = 0) {
   if (!e.alive) return;
   const spec = ENEMY[e.type];
   const hw = spec.w / 2, hh = spec.h / 2;
+
+  if (e.type === 'flyer') {
+    e.y = e.baseY + Math.sin(step / 25 + e.i) * spec.bob;
+    const atx = Math.floor((e.x + e.dir * (hw + 3)) / TILE);
+    if (solidAt(lv, atx, Math.floor(e.y / TILE)) || e.x <= e.x0 || e.x >= e.x1) e.dir = -e.dir;
+    e.x += spec.speed * e.dir;
+    return;
+  }
 
   e.vy = Math.min(e.vy + GRAVITY, MAX_FALL);
   e.y += e.vy;
@@ -469,7 +529,7 @@ export function hitEnemy(b, e) {
   const inX = Math.abs(b.x - e.x) < (PLAYER_W + spec.w) / 2 - 4;
   const inY = Math.abs(b.y - e.y) < (PLAYER_H + spec.h) / 2 - 3;
   if (!inX || !inY) return null;
-  if (e.type === 'walker' && b.vy > 0.5 && b.y + PLAYER_H / 2 < e.y + spec.h * 0.3) return 'stomp';
+  if (spec.stomp && b.vy > 0.5 && b.y + PLAYER_H / 2 < e.y + spec.h * 0.3) return 'stomp';
   return b.inv > 0 ? null : 'hurt';
 }
 
@@ -491,6 +551,7 @@ export function createRun(worldId, seatCount) {
     scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0, g: 0 })),
     lives: world.lives ?? DEFAULT_LIVES,
     coinsTotal: 0,
+    steps: 0,                    // the shared clock, advanced by the host's sim
     clearBy: -1,                 // seat that reached the flag, once someone has
     over: false,                 // the team ran out of lives
   };
@@ -546,7 +607,7 @@ export function applyPickup(run, seat, i) {
 
 export function applyStomp(run, seat, i) {
   const e = run.enemies[i];
-  if (!e || !e.alive || e.type !== 'walker') return false;
+  if (!e || !e.alive || !ENEMY[e.type].stomp) return false;
   e.alive = false;
   score(run, seat).s += 1;
   return true;

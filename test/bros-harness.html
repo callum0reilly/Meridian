@@ -31,16 +31,29 @@
 //   ?world=cavern     pick a world (default meadow)
 //   ?solo=1           host only, no joiner
 //   ?auto=1           create the room, pick heroes and start automatically
+//   ?sx=72&sy=10      move the world's spawn to tile (sx, sy) — to drop
+//                     straight into the part of a level you're working on
 // Both panels listen to the same keyboard, so one set of keys drives both
 // heroes — handy for watching the sync, odd for anything else.
 import { install } from './fake-peer.js';
 install();
 const bros = (await import('../js/games/bros/index.js')).default;
+const { WORLDS, WORLD_BY_ID } = await import('../js/games/bros/levels.js');
 
 const q = new URLSearchParams(location.search);
 const solo = q.get('solo') === '1';
 const world = q.get('world') || 'meadow';
 if (solo) document.getElementById('rig').classList.add('solo');
+
+if (q.get('sx')) {
+  const w = WORLD_BY_ID.get(world);
+  const sx = +q.get('sx'), sy = +q.get('sy');
+  const map = w.map.map((r) => r.replace('S', '.'));
+  map[sy] = map[sy].slice(0, sx) + 'S' + map[sy].slice(sx + 1);
+  const moved = { ...w, map };
+  WORLDS[WORLDS.indexOf(w)] = moved;
+  WORLD_BY_ID.set(world, moved);
+}
 
 const out = document.getElementById('results');
 const say = (msg, cls = '') => {

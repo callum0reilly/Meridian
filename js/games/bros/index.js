@@ -25,7 +25,7 @@
 
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
-  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt,
+  TILE, ROWS, WORLDS, WORLD_BY_ID, parseWorld, tileAt, moverPos, windAt, MOVER_W, MOVER_H,
   STEP_MS, TICK_MS, TICK_HZ, MIN_PLAYERS, MAX_PLAYERS,
   CHARACTERS, CHAR_IDS, PLAYER_W, PLAYER_H, ENEMY,
   RESPAWN_STEPS, STOMP_BOUNCE, BUFF_STEPS,
@@ -178,6 +178,13 @@ function init(root, header) {
   let jumpQueued = false;
   let lastSend = 0;
   let cam = 0;
+
+  /* ---- the shared clock ----
+     Movers and wind are functions of the host's step count. Every machine
+     runs its own copy at 60Hz and snaps to the host's number when a snapshot
+     shows it has drifted — so a platform is where everyone agrees it is. */
+  let clock = 0;
+  const CLOCK_SLACK = 8;
 
   const el = (sel) => root.querySelector('.' + sel);
   let canvas = null, ctx = null;
@@ -442,6 +449,7 @@ function init(root, header) {
     if (body) poses.set(seatOf(selfId), [Math.round(body.x), Math.round(body.y), body.face, Math.abs(body.vx) > 0.3 ? 1 : 0, body.dead ? 1 : 0, body.hp > 1 ? 1 : 0]);
     const snap = {
       t: 's',
+      k: state.run.steps,
       p: [...poses.entries()].map(([seat, p]) => [seat, ...p]),
       e: state.run.enemies.filter((e) => e.alive)
         .map((e) => [e.i, Math.round(e.x), Math.round(e.y), e.dir]),
@@ -468,7 +476,8 @@ function init(root, header) {
         simAcc -= TICK_MS;
         ticks += 1;
         for (let i = 0; i < 3; i++) {
-          for (const e of state.run.enemies) stepEnemy(e, state.run.lv);
+          state.run.steps += 1;
+          for (const e of state.run.enemies) stepEnemy(e, state.run.lv, state.run.steps);
         }
       }
       if (simAcc >= TICK_MS * MAX_TICK_CATCHUP) simAcc = 0;
@@ -557,6 +566,7 @@ function init(root, header) {
     fx = [];
     banner = null;
     cam = 0;
+    clock = 0;
     keys.clear();
     jumpQueued = false;
     root.innerHTML = GAME_HTML;
@@ -570,6 +580,8 @@ function init(root, header) {
     const now = performance.now();
     const seat = mySeat();
     const seen = new Set();
+
+    if (typeof s.k === 'number' && Math.abs(s.k - clock) > CLOCK_SLACK) clock = s.k;
 
     for (const [st, x, y, f, m, d, h] of s.p) {
       if (st === seat) continue;         // my hero is mine; the echo is stale
@@ -651,7 +663,8 @@ function init(root, header) {
 
     const wasDead = body.dead;
     const hadBuff = body.buff;
-    const ev = stepPlayer(body, input, lv);
+    clock += 1;
+    const ev = stepPlayer(body, input, lv, clock);
 
     if (ev.jumped) sfx.jump();
     if (ev.landed) { sfx.land(); addFx('dust', body.x, body.y + PLAYER_H / 2); }
@@ -816,6 +829,7 @@ function init(root, header) {
     drawHills(pal.hillFar, 0.25, 210, 90, ts);
     drawHills(pal.hillNear, 0.5, 150, 130, ts);
     if (lv.world.id === 'frost') drawSnow(ts);
+    if (lv.world.wind) drawWind(ts);
 
     ctx.save();
     let sx = 0, sy = 0;
@@ -827,6 +841,7 @@ function init(root, header) {
     ctx.translate(-Math.round(cam) + sx, sy);
 
     drawTiles(ts, pal);
+    drawMovers(ts, pal);
     drawCheckpoints(ts, pal);
     drawFlag(ts, pal);
     drawCoins(ts);
@@ -870,6 +885,47 @@ function init(root, header) {
       const x = (i * 137.5 + ts * 0.02 * (1 + i % 3)) % (VIEW_W + 20) - 10;
       const y = (i * 89.3 + ts * 0.001 * speed * 30) % (VIEW_H + 20) - 10;
       ctx.fillRect(x, y, 2 + (i % 2), 2 + (i % 2));
+    }
+  }
+
+  /** Streaks that blow the way the wind is blowing right now, faster when
+   *  it's stronger — so you can read the gust before you jump into it. */
+  function drawWind(ts) {
+    const w = windAt(lv.world, clock) / (lv.world.wind || 1);   // -1..1
+    const dir = Math.sign(w) || 1;
+    const strength = Math.abs(w);
+    ctx.strokeStyle = `rgba(255,255,255,${0.15 + strength * 0.35})`;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    for (let i = 0; i < 26; i++) {
+      const len = 14 + (i % 4) * 8 + strength * 30;
+      const speed = 0.12 + (i % 3) * 0.05 + strength * 0.3;
+      const x = ((i * 173.3 + ts * speed * dir) % (VIEW_W + 80) + VIEW_W + 80) % (VIEW_W + 80) - 40;
+      const y = (i * 61.7 + Math.sin(ts / 700 + i) * 6) % VIEW_H;
+      ctx.moveTo(x, y);
+      ctx.lineTo(x - dir * len, y + 1);
+    }
+    ctx.stroke();
+  }
+
+  function drawMovers(ts, pal) {
+    for (const m of lv.movers) {
+      const p = moverPos(m, clock);
+      const x = p.x - MOVER_W / 2, y = p.y - MOVER_H / 2;
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.fillRect(x + 3, y + MOVER_H, MOVER_W - 6, 3);
+      ctx.fillStyle = pal.platform;
+      ctx.beginPath();
+      ctx.roundRect(x, y, MOVER_W, MOVER_H, 3);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(255,255,255,0.3)';
+      ctx.fillRect(x + 2, y + 1, MOVER_W - 4, 2);
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      for (let i = 1; i < 3; i++) ctx.fillRect(x + i * MOVER_W / 3 - 1, y + 2, 2, MOVER_H - 4);
+      // Little thrusters underneath, flickering.
+      ctx.fillStyle = `rgba(255,178,36,${0.5 + 0.4 * Math.sin(ts / 40)})`;
+      ctx.fillRect(x + 10, y + MOVER_H, 6, 4 + Math.sin(ts / 50) * 2);
+      ctx.fillRect(x + MOVER_W - 16, y + MOVER_H, 6, 4 + Math.cos(ts / 50) * 2);
     }
   }
 
@@ -972,6 +1028,19 @@ function init(root, header) {
           ctx.fillRect(x, y + 8 + wob, TILE, TILE - 8 - wob);
           ctx.fillStyle = pal.lavaGlow || '#ffd23e';
           ctx.fillRect(x, y + 8 + wob, TILE, 3);
+        } else if (ch === 'u') {
+          // Rising wisps: three per tile, scrolling upward on the clock.
+          ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          for (let i = 0; i < 3; i++) {
+            const ph = ((ts / 6 + i * 11 + tx * 7) % TILE);
+            const yy = y + TILE - ph;
+            const xx = x + 6 + i * 10 + Math.sin(ts / 200 + i + tx) * 2;
+            ctx.moveTo(xx, yy + 6);
+            ctx.lineTo(xx, yy - 2);
+          }
+          ctx.stroke();
         }
       }
     }
@@ -1121,6 +1190,32 @@ function init(root, header) {
       ctx.fillStyle = '#222';
       ctx.beginPath();
       ctx.arc(x + f.dir * 6.5, y - 4, 2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.type === 'flyer') {
+      // A round bird-thing with flapping wings and a beak pointing its way.
+      const flap = Math.sin(ts / 70 + f.i) * 7;
+      ctx.fillStyle = '#5b4a8a';
+      ctx.beginPath();
+      ctx.moveTo(x - 6, y); ctx.lineTo(x - spec.w / 2 - 6, y - 6 - flap); ctx.lineTo(x - 8, y + 5);
+      ctx.moveTo(x + 6, y); ctx.lineTo(x + spec.w / 2 + 6, y - 6 - flap); ctx.lineTo(x + 8, y + 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#8b6fd1';
+      ctx.beginPath();
+      ctx.ellipse(x, y, 11, spec.h / 2, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#ffb224';
+      ctx.beginPath();
+      ctx.moveTo(x + f.dir * 10, y + 1); ctx.lineTo(x + f.dir * 17, y + 3); ctx.lineTo(x + f.dir * 10, y + 5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(x + f.dir * 4, y - 3, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#222';
+      ctx.beginPath();
+      ctx.arc(x + f.dir * 5, y - 3, 1.6, 0, Math.PI * 2);
       ctx.fill();
     } else {
       ctx.fillStyle = '#d7deeb';

@@ -11,7 +11,7 @@ import {
   collectCoins, collectGems, collectPickups, touchCheckpoint, touchFlag,
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
-  nextWorldId,
+  nextWorldId, moverPos, windAt,
 } from '../js/games/bros/rules.js';
 
 /* ---------------- helpers ---------------- */
@@ -498,6 +498,100 @@ test('spikers refuse to be stomp-scored', () => {
   assert.ok(spikerIdx >= 0, 'cavern has a spiker');
   assert.equal(applyStomp(run, 0, spikerIdx), false);
   assert.equal(run.enemies[spikerIdx].alive, true);
+});
+
+/* ---------------- the clockwork: movers, wind, updrafts, flyers ---------------- */
+
+function windyWorld({ wind = 0 } = {}) {
+  const r = (s) => s.padEnd(24, '.');
+  const map = Array.from({ length: ROWS }, () => r(''));
+  //   col: 012345678901234567890123
+  map[ROWS - 8] = r('..........uu');              // updraft column at 10–11, rows ROWS-8..ROWS-3
+  map[ROWS - 7] = r('..........uu');
+  map[ROWS - 6] = r('..........uu.......Y');       // flyer at 19
+  map[ROWS - 5] = r('..........uu');
+  map[ROWS - 4] = r('..........uu');
+  map[ROWS - 3] = r('.S........uu..M-----');       // mover at 14, rail 15–19 (same row as the floor top!)
+  map[ROWS - 2] = r('########..........######');   // floor 0–7, pit 8–17, floor 18–23
+  map[ROWS - 1] = r('########..........######');
+  return { id: 'windy', name: 'Windy', sub: '', ice: false, wind, palette: {}, map };
+}
+
+test('movers parse their rails and ride a triangle wave on the clock', () => {
+  const lv = parseWorld(windyWorld());
+  assert.equal(lv.movers.length, 1);
+  const m = lv.movers[0];
+  assert.equal(m.x0, 14 * TILE + TILE / 2);
+  assert.equal(m.x1, 19 * TILE + TILE / 2);
+  assert.equal(m.y0, m.y1);
+  assert.ok(!/[MV:-]/.test(lv.grid.join('')), 'rails are air once parsed');
+  assert.deepEqual(moverPos(m, 0), { x: m.x0, y: m.y0 }, 'starts at the rail\'s first end');
+  const xs = [];
+  for (let s = 0; s < 400; s += 20) xs.push(moverPos(m, s).x);
+  assert.ok(Math.max(...xs) <= m.x1 && Math.min(...xs) >= m.x0, 'never leaves the rail');
+  assert.ok(xs.some((x, i) => i && x < xs[i - 1]), 'comes back the other way');
+});
+
+test('a hero lands on a mover and is carried along with it', () => {
+  const lv = parseWorld(windyWorld());
+  const b = makeBody(lv, 'rex', 0);
+  let step = 0;
+  const p0 = moverPos(lv.movers[0], step);
+  b.x = p0.x; b.y = p0.y - 60; b.onGround = false;
+  for (let i = 0; i < 30; i++) stepPlayer(b, IDLE, lv, ++step);
+  assert.equal(b.onGround, true, 'standing on the platform');
+  assert.equal(b.ride, 0);
+  const xBefore = b.x;
+  const offset = b.x - moverPos(lv.movers[0], step).x;
+  for (let i = 0; i < 60; i++) stepPlayer(b, IDLE, lv, ++step);
+  const p1 = moverPos(lv.movers[0], step);
+  assert.ok(Math.abs(b.x - xBefore) > 30, 'carried sideways without any input');
+  assert.ok(Math.abs((b.x - p1.x) - offset) < 0.01, 'kept its footing: same spot on the platform');
+  stepPlayer(b, press({ down: true }), lv, ++step);
+  for (let i = 0; i < 10; i++) stepPlayer(b, IDLE, lv, ++step);
+  assert.equal(b.ride, -1, 'pressing down drops you off the platform');
+  assert.ok(b.y > p1.y, 'and you fall through it');
+});
+
+test('the wind swings both ways and pushes airborne heroes more', () => {
+  const world = windyWorld({ wind: 0.05 });
+  const seen = new Set();
+  for (let s = 0; s < 1000; s += 50) seen.add(Math.sign(windAt(world, s)));
+  assert.ok(seen.has(1) && seen.has(-1), 'blows right and left over time');
+  const lv = parseWorld(world);
+  const air = makeBody(lv, 'rex', 0);
+  air.x = 4 * TILE; air.y = 2 * TILE; air.onGround = false;
+  const ground = grounded(lv);
+  const step = 235;     // sin(235/150) is near its peak
+  stepPlayer(air, IDLE, lv, step);
+  stepPlayer(ground, IDLE, lv, step);
+  assert.ok(Math.abs(air.vx) > Math.abs(ground.vx) * 2, 'a gust shoves you in the air, leans on you on the ground');
+});
+
+test('an updraft lifts you instead of letting you fall', () => {
+  const lv = parseWorld(windyWorld());
+  const b = makeBody(lv, 'rex', 0);
+  b.x = 10 * TILE + TILE; b.y = (ROWS - 4) * TILE; b.onGround = false; b.vy = 3;
+  for (let i = 0; i < 40; i++) stepPlayer(b, IDLE, lv, i);
+  assert.ok(b.vy < 0, 'rising');
+  assert.ok(b.y < (ROWS - 6) * TILE, 'well above where it started');
+  assert.equal(b.dead, false);
+});
+
+test('flyers bob and patrol on the clock, and can be stomped', () => {
+  const lv = parseWorld(windyWorld());
+  const run = createRun('isles', 1);
+  const flyer = run.enemies.find((e) => e.type === 'flyer');
+  assert.ok(flyer, 'the isles have flyers');
+  const y0 = flyer.y, x0 = flyer.x;
+  const ys = new Set();
+  for (let s = 1; s <= 200; s++) { stepEnemy(flyer, run.lv, s); ys.add(Math.round(flyer.y)); }
+  assert.ok(ys.size > 10, 'bobbing through many heights');
+  assert.ok(Math.abs(flyer.y - y0) <= ENEMY.flyer.bob + 1, 'never far from its line');
+  assert.ok(Math.abs(flyer.x - x0) <= ENEMY.flyer.range + 2, 'never far from its post');
+  assert.equal(applyStomp(run, 0, flyer.i), true, 'stompable');
+  const local = parseWorld(windyWorld());
+  assert.equal(local.enemies.find((e) => e.type === 'flyer').y, (ROWS - 6) * TILE + TILE / 2, 'Y parses as a flyer');
 });
 
 test('the world tour advances and wraps', () => {

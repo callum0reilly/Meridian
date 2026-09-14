@@ -585,8 +585,8 @@ export function hitEnemy(b, e) {
 /* ========================= the shared run (host) ========================= */
 
 /** Everything one attempt at one world accumulates. Lives on the host;
- *  clients see it through room pushes. In a race there are no shared lives —
- *  deaths just cost time. */
+ *  clients see it through room pushes. Each player has their own lives,
+ *  indexed by seat; in a race there are none — deaths just cost time. */
 export function createRun(worldId, seatCount, { race = false } = {}) {
   const world = WORLD_BY_ID.get(worldId) || WORLDS[0];
   const lv = parseWorld(world);
@@ -603,12 +603,12 @@ export function createRun(worldId, seatCount, { race = false } = {}) {
     cracked: lv.cracked,         // "tx,ty" of bricks hit once — shared with lv
     broken: lv.broken,           //   … and twice, so collision sees it too
     scores: Array.from({ length: seatCount }, () => ({ c: 0, s: 0, d: 0, g: 0 })),
-    lives: race ? null : (world.lives ?? DEFAULT_LIVES),
+    lives: race ? null : Array.from({ length: seatCount }, () => world.lives ?? DEFAULT_LIVES),
     coinsTotal: 0,
     steps: 0,                    // the shared clock, advanced by the host's sim
     clearBy: -1,                 // seat that reached the flag, once someone has
     clearSteps: 0,               // the clock when they did
-    over: false,                 // the team ran out of lives
+    over: false,                 // every player ran out of lives
     bossDown: false,
   };
 }
@@ -618,13 +618,30 @@ export function createRun(worldId, seatCount, { race = false } = {}) {
    two players hitting the same coin in the same tick both honestly claim it,
    and exactly one of these calls returns true. */
 
-/** Bank a team coin. Every COINS_PER_LIFE of them is a 1-up; returns whether
+/** Bank a team coin. Every COINS_PER_LIFE of them is a 1-up for *every*
+ *  player — including anyone who was out, who is back in. Returns whether
  *  this one was. */
 function bankCoin(run, seat) {
   score(run, seat).c += 1;
   run.coinsTotal += 1;
-  if (run.coinsTotal % COINS_PER_LIFE === 0) { run.lives += 1; return true; }
-  return false;
+  if (run.coinsTotal % COINS_PER_LIFE !== 0 || !run.lives) return false;
+  run.lives = run.lives.map((n) => n + 1);
+  return true;
+}
+
+/** Lives left for one seat, or null in a race. */
+export const livesOf = (run, seat) => (run.lives ? run.lives[seat] ?? 0 : null);
+
+/** Out of lives: watching the others until a 1-up brings them back. */
+export const isOut = (run, seat) => !!run.lives && (run.lives[seat] ?? 0) <= 0;
+
+/** Once nobody still playing has a life left, the run is lost. `inPlay` is the
+ *  seats that count — a player who disconnected doesn't hold it open. */
+export function checkWipe(run, inPlay = null) {
+  if (!run.lives || run.over) return run.over;
+  const seats = inPlay ?? run.lives.map((_, i) => i);
+  if (seats.length && seats.every((i) => isOut(run, i))) run.over = true;
+  return run.over;
 }
 
 export function applyCoin(run, seat, i) {
@@ -692,13 +709,14 @@ export function applyStomp(run, seat, i) {
   return true;
 }
 
-/** A death costs the team a life; the last one ends the run. */
-export function applyDeath(run, seat) {
-  if (run.over) return false;
+/** A death costs that player one of their own lives. On their last, they're
+ *  out; when everyone still playing is out, the run is over. */
+export function applyDeath(run, seat, inPlay = null) {
+  if (run.over || isOut(run, seat)) return false;
   score(run, seat).d += 1;
-  if (run.lives !== null) {
-    run.lives -= 1;
-    if (run.lives <= 0) { run.lives = 0; run.over = true; }
+  if (run.lives) {
+    run.lives[seat] = Math.max(0, (run.lives[seat] ?? 0) - 1);
+    checkWipe(run, inPlay);
   }
   return true;
 }

@@ -15,12 +15,22 @@
 // The room object is small (4 players x 4 tokens), so it's simply sent whole on
 // every change rather than diffed.
 
+//
+// ---- Turns nobody has to click ----
+// Computer players, and two house rules, take turns with no decision in them
+// off your hands: with exactly one token in play the dice roll themselves, and
+// a roll with only one real move plays it. `drive` runs on the host after
+// every change and schedules whichever of those applies, through the same
+// `hostRoll`/`hostMove` a click would reach.
+
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
-  COLORS, START, SAFE, TRACK_LEN, HOME_STEP, YARD, TOKENS_PER_PLAYER,
-  createState, currentSeat, applyRoll, applyMove, passTurn,
-  absSquare, isHome, inYard, inHomeColumn, rollDice,
+  COLORS, START, SAFE, TRACK_LEN, HOME_STEP, YARD, TOKENS_PER_PLAYER, YARD_MISSES,
+  createState, currentSeat, applyRoll, applyMove, passTurn, releaseToken,
+  absSquare, isHome, inYard, inHomeColumn, rollDice, tokensInPlay, autoRolls, onlyMove,
 } from './rules.js';
+import { chooseMove } from './ai.js';
+import { botSeat, seatBadge, soloHTML, ADD_BOT_HTML, bindBotControls, kickButton, thinkDelay } from '../../bots.js';
 import { GRID, TRACK, HOME_COLUMN, YARD_ORIGIN, YARD_SLOTS, HOME_SLOTS, cellCentre } from './board.js';
 
 const GAME = 'ludo';
@@ -31,7 +41,7 @@ const LOBBY_HTML = `
   <div class="lobby">
     <div class="lobby-card">
       <h2>Ludo</h2>
-      <div class="lead">Create a room and share the code, or enter a friend's code to join. 2–4 players.</div>
+      <div class="lead">Create a room and share the code, enter a friend's code to join, or play the computer. 2–4 players.</div>
 
       <div class="field">
         <label for="ludo-name">Your name</label>
@@ -50,6 +60,7 @@ const LOBBY_HTML = `
           <button class="join">Join</button>
         </div>
       </div>
+${soloHTML({ counts: 3 })}
 
       <div class="err lobbyerr"></div>
     </div>
@@ -67,6 +78,7 @@ const WAIT_HTML = `
         <button class="copy">Copy code</button>
       </div>
       <ul class="seats"></ul>
+${ADD_BOT_HTML}
       <button class="primary start">Start game</button>
       <div class="hint starthint"></div>
       <div class="err waiterr"></div>
@@ -86,6 +98,7 @@ const TABLE_HTML = `
         <div class="dice"></div>
         <button class="primary rollbtn">Roll</button>
       </div>
+      <div class="yardnote" role="status" hidden></div>
       <div class="loghead">Game log</div>
       <div class="logwrap"></div>
     </aside>
@@ -108,6 +121,8 @@ function init(root, header) {
   let selfId = null;
   let myName = 'Player';
   let rolling = false;    // suppresses double-clicks during the dice animation
+  let shownDice = null;   // the dice as last drawn, to shake them when a new roll lands
+  let driveTimer = null;  // host: the pending automatic roll or move
 
   const el = (sel) => root.querySelector('.' + sel);
 
@@ -115,15 +130,19 @@ function init(root, header) {
                      '<button class="leave" hidden>Leave room</button>';
   const leaveBtn = header.querySelector('.leave');
   leaveBtn.onclick = () => {
-    if (!confirm('Leave the room? This ends the game for you.')) return;
+    const q = room ? 'Leave the room? This ends the game for you.' : 'End this game and go back to the lobby?';
+    if (!confirm(q)) return;
     teardown();
     showLobby();
   };
 
   function teardown() {
+    clearTimeout(driveTimer);
+    driveTimer = null;
     room?.close();
-    room = null; state = null; selfId = null;
+    room = null; state = null; selfId = null; shownDice = null;
     leaveBtn.hidden = true;
+    leaveBtn.textContent = 'Leave room';
   }
 
   /* ============================ lobby ============================ */
@@ -145,6 +164,20 @@ function init(root, header) {
 
     const busy = (btn, label) => { btn.disabled = true; btn.textContent = label; };
 
+    // No room at all: this browser is the host, and everyone else is a bot.
+    el('solo').onclick = () => {
+      takeName();
+      const level = el('sololevel').value;
+      const count = Number(el('solocount').value) || 1;
+      selfId = 'you';
+      const seats = [{ id: selfId, name: myName, color: COLORS[0], connected: true }];
+      for (let k = 0; k < count; k++) seats.push(botSeat(seats, level, { color: COLORS[seats.length] }));
+      state = { phase: 'lobby', code: null, hostId: selfId, seats, game: null };
+      leaveBtn.textContent = 'End game';
+      leaveBtn.hidden = false;
+      intent({ t: 'start' });
+    };
+
     el('create').onclick = async () => {
       const btn = el('create');
       takeName();
@@ -160,6 +193,7 @@ function init(root, header) {
           seats: [{ id: selfId, name: myName, color: COLORS[0], connected: true }],
           game: null,
         };
+        leaveBtn.textContent = 'Leave room';
         leaveBtn.hidden = false;
         pushAndRender();
       } catch (e) {
@@ -197,9 +231,10 @@ function init(root, header) {
   /* ======================== host: intents ======================== */
 
   // Every action funnels through here on the host — including the host's own.
+  // With no room it is a solo game against the computer, and we are the host.
   function intent(msg) {
-    if (room?.isHost) onHostMessage(msg, selfId);
-    else room?.send(null, msg);
+    if (!room || room.isHost) onHostMessage(msg, selfId);
+    else room.send(null, msg);
   }
 
   function onJoin(peerId) {
@@ -254,6 +289,21 @@ function init(root, header) {
     }
 
     if (!seat) return; // not a player in this room
+
+    if (msg.t === 'addbot') {
+      if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length >= MAX_PLAYERS) return;
+      state.seats.push(botSeat(state.seats, msg.level, { color: COLORS[state.seats.length] }));
+      pushAndRender();
+      return;
+    }
+
+    if (msg.t === 'kick') {
+      if (fromId !== state.hostId || state.phase !== 'lobby') return;
+      state.seats = state.seats.filter((s) => !(s.bot && s.id === msg.id));
+      reColour();
+      pushAndRender();
+      return;
+    }
 
     if (msg.t === 'start') {
       if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length < 2) return;
@@ -311,9 +361,15 @@ function init(root, header) {
       // Nothing legal. Let players see the roll before the turn moves on.
       setTimeout(() => {
         if (!state || state.game !== g || g.dice !== dice) return;
-        log(`No legal move for <b>${seat.name}</b>`);
+        if (res.release) {
+          releaseToken(g);
+          log(`${YARD_MISSES} misses in a row — a <b>${seat.name}</b> token comes out for free`);
+        } else if (res.misses) {
+          log(`No 6 for <b>${seat.name}</b> — miss ${res.misses} of ${YARD_MISSES}`);
+        } else {
+          log(`No legal move for <b>${seat.name}</b>`);
+        }
         passTurn(g, { keepSeat: false });
-        pushAndRender();
         announceTurn();
       }, 1300);
     }
@@ -342,8 +398,41 @@ function init(root, header) {
   }
 
   function announceTurn() {
-    if (state?.game?.phase === 'playing') log(`${currentSeat(state.game).name} to roll`);
+    const g = state?.game;
+    if (g?.phase === 'playing') {
+      const seat = currentSeat(g);
+      log(`${seat.name} to roll` + (autoRolls(g) && !seat.bot ? ' (one token in play — rolls itself)' : ''));
+    }
     pushAndRender();
+  }
+
+  /** Host only: schedule the roll or move nobody needs to click for — a
+   *  computer player's, or a person's turn with no decision in it. Called
+   *  after every change, so it cancels whatever it had pending first; a stale
+   *  timer then has nothing left to fire. */
+  function drive() {
+    clearTimeout(driveTimer);
+    driveTimer = null;
+    if (room && !room.isHost) return;
+    const g = state?.game;
+    if (!g || state.phase !== 'playing' || g.phase !== 'playing') return;
+    const seat = currentSeat(g);
+
+    if (g.dice === null) {
+      if (!seat.bot && !autoRolls(g)) return;
+      driveTimer = setTimeout(() => {
+        if (state?.game === g && g.dice === null && currentSeat(g) === seat) hostRoll();
+      }, seat.bot ? thinkDelay(700) : 900);
+      return;
+    }
+
+    if (!g.moves.length) return;
+    const pick = onlyMove(g) ?? (seat.bot ? chooseMove(g, seat.bot) : null);
+    if (pick === null) return;
+    const dice = g.dice;
+    driveTimer = setTimeout(() => {
+      if (state?.game === g && g.dice === dice && currentSeat(g) === seat && g.moves.includes(pick)) hostMove(pick);
+    }, seat.bot ? thinkDelay(500) : 700);
   }
 
   function log(html) {
@@ -356,6 +445,7 @@ function init(root, header) {
   function pushAndRender() {
     if (room?.isHost) room.broadcast({ t: 'room', room: state });
     render();
+    drive();
   }
 
   /* ======================= client: messages ====================== */
@@ -396,21 +486,23 @@ function init(root, header) {
     if (!root.querySelector('.codeval')) root.innerHTML = WAIT_HTML;
     el('codeval').textContent = state.code;
 
+    const isHost = selfId === state.hostId;
     el('seats').innerHTML = state.seats.map((s) => `
       <li>
         <div class="dot ${s.color}"></div>
         <div class="nm">${esc(s.name)}</div>
-        <div class="badge">${s.id === state.hostId ? 'host' : ''}${s.id === selfId ? ' · you' : ''}</div>
+        <div class="badge">${seatBadge(s, state.hostId, selfId)}</div>
+        ${kickButton(s, isHost)}
       </li>`).join('');
+    bindBotControls(root, { isHost, full: state.seats.length >= MAX_PLAYERS, intent });
 
-    const isHost = selfId === state.hostId;
     const startBtn = el('start');
     startBtn.hidden = !isHost;
     startBtn.disabled = state.seats.length < 2;
     startBtn.onclick = () => intent({ t: 'start' });
 
     el('starthint').textContent = isHost
-      ? (state.seats.length < 2 ? 'Waiting for at least one more player…' : `${state.seats.length} players ready.`)
+      ? (state.seats.length < 2 ? 'Waiting for at least one more player — or add a computer player.' : `${state.seats.length} players ready.`)
       : 'Waiting for the host to start…';
 
     const copy = el('copy');
@@ -442,23 +534,62 @@ function init(root, header) {
         `<div class="sub">You are ${mySeat ? mySeat.color : 'spectating'}${g.dice ? ' · rolled ' + g.dice : ''}</div>`;
 
     renderDice(el('dice'), g.dice);
+    // Shake on every fresh roll, whoever made it — a bot's or an automatic
+    // roll deserves the same moment as a click.
+    if (g.dice !== null && shownDice === null) {
+      const dice = el('dice');
+      dice.classList.remove('rolling');
+      void dice.offsetWidth;            // restart the animation
+      dice.classList.add('rolling');
+      setTimeout(() => dice.classList.remove('rolling'), 400);
+    }
+    shownDice = g.dice;
 
+    const autoRoll = g.phase === 'playing' && autoRolls(g);
+    const autoMove = g.dice !== null && onlyMove(g) !== null;
     const rollBtn = el('rollbtn');
     rollBtn.hidden = g.phase === 'over';
-    rollBtn.disabled = !myTurn || g.dice !== null || rolling;
-    rollBtn.textContent = !myTurn ? 'Waiting…' : (g.dice === null ? 'Roll' : 'Pick a token');
+    rollBtn.disabled = !myTurn || g.dice !== null || rolling || autoRoll;
+    rollBtn.textContent = !myTurn ? (seat.bot ? `${seat.name} is playing…` : 'Waiting…')
+      : g.dice === null ? (autoRoll ? 'Rolling for you…' : 'Roll')
+      : !g.moves.length ? 'No move'
+      : autoMove ? 'Moving for you…' : 'Pick a token';
     rollBtn.onclick = () => {
       rolling = true;
-      el('dice').classList.add('rolling');
-      setTimeout(() => { rolling = false; el('dice').classList.remove('rolling'); render(); }, 400);
+      setTimeout(() => { rolling = false; render(); }, 400);
       intent({ t: 'roll' });
     };
+
+    renderYardNote(g, seat);
 
     el('logwrap').innerHTML = g.log.slice().reverse()
       .map((l) => `<div class="logline">${l}</div>`).join('');
 
     drawTokens(el('board'), g, myTurn);
     renderOver(g);
+  }
+
+  /** The house rule for a player with nothing on the board, made visible:
+   *  how many misses they've had, and what happens on the last one. */
+  function renderYardNote(g, seat) {
+    const note = el('yardnote');
+    const color = seat.color;
+    const show = g.phase === 'playing' && tokensInPlay(g, color) === 0 && g.tokens[color].some(inYard);
+    note.hidden = !show;
+    if (!show) return;
+
+    const misses = Math.min(g.misses?.[color] ?? 0, YARD_MISSES);
+    const pips = Array.from({ length: YARD_MISSES }, (_, k) => `<i class="${k < misses ? 'on' : ''}"></i>`).join('');
+    const who = seat.id === selfId ? 'You have' : `${esc(seat.name)} has`;
+    const next = misses >= YARD_MISSES
+      ? `<span class="yn-free">That's ${YARD_MISSES} — a token comes out for free!</span>`
+      : misses === YARD_MISSES - 1
+        ? 'Roll a 6 to come out. <span class="yn-free">One more miss and a token comes out free.</span>'
+        : `Roll a 6 to come out. After ${YARD_MISSES} misses a token comes out free.`;
+    note.innerHTML = `
+      <div class="yn-head">${who} no tokens on the board</div>
+      <div class="yn-row"><span class="yn-pips">${pips}</span><span>${misses} of ${YARD_MISSES} misses</span></div>
+      <div class="yn-sub">${next}</div>`;
   }
 
   function renderOver(g) {
@@ -610,6 +741,21 @@ function init(root, header) {
         }
         layer.appendChild(node);
       });
+    }
+
+    // Each yard with misses against it wears the count on its top edge.
+    for (const seat of g.seats) {
+      const misses = g.misses?.[seat.color] ?? 0;
+      if (!misses || tokensInPlay(g, seat.color) > 0) continue;
+      const [c, r] = YARD_ORIGIN[seat.color];
+      const label = document.createElementNS(NS, 'text');
+      label.setAttribute('class', 'yardcount');
+      label.setAttribute('x', c + 3);
+      label.setAttribute('y', r + .58);
+      label.setAttribute('text-anchor', 'middle');
+      label.setAttribute('font-size', .46);
+      label.textContent = `Misses ${Math.min(misses, YARD_MISSES)}/${YARD_MISSES}`;
+      layer.appendChild(label);
     }
   }
 

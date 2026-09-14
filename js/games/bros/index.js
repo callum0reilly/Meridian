@@ -35,6 +35,7 @@ import {
   stepEnemy, hitEnemy,
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyKey, applyStomp, applyDeath, applyFlag,
   nextWorldId, unlockedWorlds, recordClear, fmtTime, BOSS_BOUNCE, HARD_WORLDS,
+  COINS_PER_LIFE, checkWipe,
 } from './rules.js';
 import { registerCustom } from './levels.js';
 import { sanitiseLevel, loadLevels } from './share.js';
@@ -108,7 +109,7 @@ const WAIT_HTML = `
       <div class="hardrow"></div>
       <div class="customrow"></div>
       <div class="maprow">
-        <label class="modetoggle"><input type="checkbox" class="racemode"> Race — first to the flag wins, no shared lives</label>
+        <label class="modetoggle"><input type="checkbox" class="racemode"> Race — first to the flag wins, no lives to lose</label>
         <button class="linkbtn unlockall">Unlock everything</button>
       </div>
 
@@ -141,8 +142,8 @@ const GAME_HTML = `
       <div class="blurb">Land on the round ones. Never land on the spiky ones.
         Bump <b>?</b> blocks for coins and <b>@</b> blocks for a heart shard —
         one free hit. Springs launch you. Find the three gems. The flag ends
-        the level for everyone; the team shares its lives, and every 20 coins
-        earns one back.</div>
+        the level for everyone. Each player has their own lives, and every 20
+        team coins gives everyone one more — even a player who's out.</div>
       <div class="loghead">World</div>
       <div class="worldinfo"></div>
       <div class="loghead">Party</div>
@@ -184,7 +185,8 @@ function init(root, header) {
   let keysGot = null;      // Set of key indexes
   let used = null;         // Set of "tx,ty" spent ?/@ blocks (view + optimistic)
   let flagSent = false;
-  let livesSeen = null;    // last lives count, to spot a 1-up in a room push
+  let livesSeen = null;    // my last lives count, to spot a 1-up in a room push
+  let awaitDeaths = 0;     // deaths the host must have counted before I respawn
   let checkpointAt = null; // x of my active checkpoint, for drawing it lit
 
   let ents = new Map();    // seat -> interp entity for OTHER players
@@ -343,6 +345,8 @@ function init(root, header) {
   }
 
   const seatOf = (id) => state ? state.seats.findIndex((s) => s.id === id) : -1;
+  /** Seats still in the room — the ones whose lives decide whether a run is lost. */
+  const inPlay = () => state.seats.flatMap((s, i) => (s.connected ? [i] : []));
 
   function onJoin(peerId) {
     if (state.phase !== 'wait') {
@@ -361,6 +365,11 @@ function init(root, header) {
     } else {
       state.seats[i].connected = false;
       poses.delete(i);
+      // If everyone left behind is already out, the run can't go on.
+      if (state.phase === 'play' && state.run && checkWipe(state.run, inPlay())) {
+        state.phase = 'over';
+        stopSim();
+      }
     }
     pushRoom();
   }
@@ -467,7 +476,7 @@ function init(root, header) {
     if (msg.t === 'bump') { if (applyBump(run, seat, +msg.bx, +msg.by)) pushRoom(); return; }
     if (msg.t === 'stomp') { if (applyStomp(run, seat, msg.i)) pushRoom(); return; }
     if (msg.t === 'die') {
-      if (applyDeath(run, seat)) {
+      if (applyDeath(run, seat, inPlay())) {
         if (run.over) { state.phase = 'over'; stopSim(); }
         pushRoom();
       }
@@ -606,6 +615,8 @@ function init(root, header) {
   }
 
   const mySeat = () => view ? view.seats.findIndex((s) => s.id === selfId) : -1;
+  /** My lives left, or null in a race. */
+  const myLives = () => (view?.run?.lives ? view.run.lives[mySeat()] ?? 0 : null);
 
   function applyRoom(next) {
     const prevPhase = view?.phase;
@@ -649,8 +660,12 @@ function init(root, header) {
         const f = foes.get(i);
         if (f && !f.dying) { addFx('squash', f.x, f.y); foes.delete(i); }
       }
-      if (livesSeen !== null && view.run.lives > livesSeen) { say('1-UP!'); sfx.oneUp(); }
-      livesSeen = view.run.lives;
+      const lives = myLives();
+      if (livesSeen !== null && lives !== null && lives > livesSeen) {
+        say(livesSeen === 0 ? '1-UP — you\'re back in!' : '1-UP for everyone!');
+        sfx.oneUp();
+      }
+      livesSeen = lives;
     }
 
     if (view.phase === 'over' && prevPhase === 'play') { sfx.gameOver(); releaseAll(); }
@@ -675,7 +690,8 @@ function init(root, header) {
     for (const key of view.run.broken) lv.broken.add(key);
     lv.unlocked = !!view.run.unlocked;
     flagSent = false;
-    livesSeen = view.run.lives;
+    livesSeen = myLives();
+    awaitDeaths = 0;
     checkpointAt = null;
     ents = new Map();
     foes = new Map();
@@ -887,16 +903,38 @@ function init(root, header) {
         flagSent = true;
         intent({ t: 'flag' });
       }
-    } else if (body.deadT > RESPAWN_STEPS) {
+    } else if (body.deadT > RESPAWN_STEPS && mayRespawn()) {
       respawn(body);
     }
   }
 
+  /** Back to the checkpoint — but only once the host has counted the death,
+   *  and only with a life left to spend. A player who is out stays down
+   *  until a 1-up arrives. */
+  function mayRespawn() {
+    const seat = mySeat();
+    if ((view.run.scores[seat]?.d ?? 0) < awaitDeaths) return false;
+    return myLives() !== 0;
+  }
+
   function died(text) {
-    say(text);
+    say(myLives() === 1 ? 'Out of lives!' : text);
     sfx.die();
     shake = 10;
+    awaitDeaths = (view.run.scores[mySeat()]?.d ?? 0) + 1;
     intent({ t: 'die' });
+  }
+
+  /** Out of lives: the teammate the camera follows instead — whoever is
+   *  furthest along and still standing. Null while I'm in the game. */
+  function watching() {
+    if (!body?.dead || myLives() !== 0) return null;
+    let best = null;
+    for (const [seat, e] of ents) {
+      if (e.d || view.seats[seat]?.connected === false) continue;
+      if (!best || e.x > best.x) best = { seat, x: e.x };
+    }
+    return best;
   }
 
   function sendPos(ts) {
@@ -959,9 +997,10 @@ function init(root, header) {
     if (!ctx || !lv) return;
     const pal = lv.world.palette;
 
-    // Camera chases the hero, clamped to the level, eased so a respawn pans
-    // rather than teleports the world.
-    const target = Math.max(0, Math.min(lv.w * TILE - VIEW_W, (body?.x || 0) - VIEW_W * 0.42));
+    // Camera chases the hero — or, once they're out, a teammate — clamped to
+    // the level, eased so a respawn pans rather than teleports the world.
+    const focusX = watching()?.x ?? body?.x ?? 0;
+    const target = Math.max(0, Math.min(lv.w * TILE - VIEW_W, focusX - VIEW_W * 0.42));
     cam += (target - cam) * 0.12;
     if (Math.abs(target - cam) < 0.5) cam = target;
 
@@ -1842,8 +1881,9 @@ function init(root, header) {
       }
     }
 
-    // lives: the hero's cap, then the count
-    if (run.lives !== null && run.lives !== undefined) {
+    // my lives: the hero's cap, then the count
+    const lives = myLives();
+    if (lives !== null) {
       ctx.fillStyle = 'rgba(10,14,24,0.55)';
       ctx.beginPath();
       ctx.roundRect(108, 10, 78, 30, 8);
@@ -1854,8 +1894,27 @@ function init(root, header) {
       ctx.fill();
       ctx.fillStyle = me.dark;
       ctx.fillRect(117, 26, 18, 3);
-      ctx.fillStyle = run.lives <= 1 && Math.floor(ts / 400) % 2 === 0 ? '#ff8a8a' : '#fff';
-      ctx.fillText('× ' + run.lives, 140, 26);
+      ctx.fillStyle = lives <= 1 && Math.floor(ts / 400) % 2 === 0 ? '#ff8a8a' : '#fff';
+      ctx.fillText('× ' + lives, 140, 26);
+    }
+
+    // Out: who you're watching, and how you get back in.
+    if (lives === 0 && body?.dead) {
+      const watch = watching();
+      const who = watch ? view.seats[watch.seat]?.name : null;
+      const left = COINS_PER_LIFE - (coins % COINS_PER_LIFE);
+      ctx.fillStyle = 'rgba(10,14,24,0.72)';
+      ctx.beginPath();
+      ctx.roundRect(VIEW_W / 2 - 230, VIEW_H - 70, 460, 52, 10);
+      ctx.fill();
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#fff';
+      ctx.fillText(`Out of lives${who ? ' — watching ' + who : ''}`, VIEW_W / 2, VIEW_H - 51);
+      ctx.font = '500 12px ui-sans-serif, system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,255,255,0.78)';
+      ctx.fillText(`${left} more team coin${left === 1 ? '' : 's'} and everyone gets a 1-up — you're back in`, VIEW_W / 2, VIEW_H - 31);
+      ctx.font = '700 15px ui-sans-serif, system-ui, sans-serif';
+      ctx.textAlign = 'left';
     }
 
     // gems: one slot each
@@ -2081,11 +2140,13 @@ function init(root, header) {
     el('party').innerHTML = view.seats.map((s, i) => {
       const ch = CHARACTERS[s.char];
       const sc = view.run.scores[i] || { c: 0, s: 0, d: 0, g: 0 };
+      const lives = view.run.lives ? view.run.lives[i] ?? 0 : null;
+      const livesTag = lives === null ? '' : lives > 0 ? `❤️${lives} · ` : 'OUT · ';
       return `
         <li class="${s.connected ? '' : 'gone'}">
           <div class="chip" style="background:${ch ? ch.hex : '#3a4763'}"></div>
           <div class="nm">${esc(s.name)}${s.id === selfId ? ' (you)' : ''}</div>
-          <div class="sc" title="coins · gems · stomps · deaths">🪙${sc.c} · 💎${sc.g || 0} · 👟${sc.s} · 💀${sc.d}</div>
+          <div class="sc" title="lives · coins · gems · stomps · deaths">${livesTag}🪙${sc.c} · 💎${sc.g || 0} · 👟${sc.s} · 💀${sc.d}</div>
         </li>`;
     }).join('');
   }
@@ -2121,7 +2182,7 @@ function init(root, header) {
       modal.innerHTML = `
         <div class="card2 over">
           <h2>GAME OVER</h2>
-          <div class="sub">The team ran out of lives on ${esc(world.name)}.</div>
+          <div class="sub">Everyone ran out of lives on ${esc(world.name)}.</div>
           <div class="ctable">${scoreRows()}</div>
           ${isHost ? `
             <div class="btnrow">

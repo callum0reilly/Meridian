@@ -49,6 +49,10 @@ header {
 .brand span { color: var(--accent); }
 header .spacer { flex: 1; }
 header .slot { display: flex; align-items: center; gap: 10px; }
+/* Each module keeps its own header slot and the shell hides the ones you're
+   not on — which the `display` above would otherwise override, piling every
+   game you've visited into the header at once. */
+header .slot[hidden] { display: none; }
 .tag { color: var(--muted); font-size: 13px; }
 
 /* ---- switcher ----
@@ -133,6 +137,13 @@ input {
 input:focus { outline: none; border-color: var(--accent); }
 input:disabled { opacity: .5; }
 
+select {
+  font: inherit; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 8px;
+}
+select:focus { outline: none; border-color: var(--accent); }
+
 .err { color: var(--danger); font-size: 12px; min-height: 15px; }
 
 /* A game that fails to boot gets this from the shell (see app.js). */
@@ -167,7 +178,7 @@ input:disabled { opacity: .5; }
 }
 .field input { width: 100%; }
 .row { display: flex; gap: 8px; }
-.row input { flex: 1; min-width: 0; }
+.row input, .row select { flex: 1; min-width: 0; }
 .row button { width: auto; flex: none; }
 
 .or {
@@ -205,6 +216,11 @@ input:disabled { opacity: .5; }
 .seats .nm { flex: 1; font-weight: 500; }
 .seats .badge { font-size: 11px; color: var(--muted); }
 .seats li.gone { opacity: .5; }
+.seats .kick { width: auto; padding: 3px 9px; font-size: 12px; }
+
+/* The host's "add a computer player" row, under the seat list. */
+.botadd { margin: -6px 0 16px; }
+.botadd[hidden] { display: none; }
 
 .hint { color: var(--muted); font-size: 12px; text-align: center; margin-top: 10px; }
 

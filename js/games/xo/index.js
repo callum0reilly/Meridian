@@ -13,12 +13,20 @@
 // `state` goes out as-is. The room object is nine squares and two names, so
 // sending it whole on every change costs nothing worth optimising.
 
+//
+// ---- The computer ----
+// A computer opponent is a seat with `bot` set (see js/bots.js). With no room
+// this browser hosts a solo match; in a room the host can seat one instead of
+// a friend. Either way `driveBots` plays its turns through `onHostMessage`.
+
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
   CELLS, PLAYERS, DEFAULT_TARGET,
   createState, currentSeat, legalMoves, markOf,
   applyMove, nextRound, resetMatch,
 } from './rules.js';
+import { chooseSquare } from './ai.js';
+import { botSeat, seatBadge, soloHTML, ADD_BOT_HTML, bindBotControls, kickButton, thinkDelay } from '../../bots.js';
 
 const GAME = 'xo';
 
@@ -26,7 +34,7 @@ const LOBBY_HTML = `
   <div class="lobby">
     <div class="lobby-card">
       <h2>X and O's</h2>
-      <div class="lead">Create a room and share the code, or enter a friend's code to join. 2 players, first to ${DEFAULT_TARGET} rounds.</div>
+      <div class="lead">Create a room and share the code, enter a friend's code to join, or play the computer. 2 players, first to ${DEFAULT_TARGET} rounds.</div>
 
       <div class="field">
         <label for="xo-name">Your name</label>
@@ -45,6 +53,7 @@ const LOBBY_HTML = `
           <button class="join">Join</button>
         </div>
       </div>
+${soloHTML()}
 
       <div class="err lobbyerr"></div>
     </div>
@@ -62,6 +71,7 @@ const WAIT_HTML = `
         <button class="copy">Copy code</button>
       </div>
       <ul class="seats"></ul>
+${ADD_BOT_HTML}
       <button class="primary start">Start game</button>
       <div class="hint starthint"></div>
       <div class="err waiterr"></div>
@@ -118,6 +128,7 @@ function init(root, header) {
   let state = null;     // the shared room object (lobby or game)
   let selfId = null;
   let myName = 'Player';
+  let botTimer = null;  // host: the computer's pending move
 
   const el = (sel) => root.querySelector('.' + sel);
 
@@ -125,15 +136,19 @@ function init(root, header) {
                      '<button class="leave" hidden>Leave room</button>';
   const leaveBtn = header.querySelector('.leave');
   leaveBtn.onclick = () => {
-    if (!confirm('Leave the room? This ends the game for you.')) return;
+    const q = room ? 'Leave the room? This ends the game for you.' : 'End this match and go back to the lobby?';
+    if (!confirm(q)) return;
     teardown();
     showLobby();
   };
 
   function teardown() {
+    clearTimeout(botTimer);
+    botTimer = null;
     room?.close();
     room = null; state = null; selfId = null;
     leaveBtn.hidden = true;
+    leaveBtn.textContent = 'Leave room';
   }
 
   /* ============================ lobby ============================ */
@@ -153,6 +168,18 @@ function init(root, header) {
       return myName;
     };
     const busy = (btn, label) => { btn.disabled = true; btn.textContent = label; };
+
+    // No room: this browser hosts a match against the computer.
+    el('solo').onclick = () => {
+      takeName();
+      selfId = 'you';
+      const seats = [{ id: selfId, name: myName, connected: true }];
+      seats.push(botSeat(seats, el('sololevel').value));
+      state = { phase: 'lobby', code: null, hostId: selfId, target: DEFAULT_TARGET, seats, game: null };
+      leaveBtn.textContent = 'End game';
+      leaveBtn.hidden = false;
+      intent({ t: 'start' });
+    };
 
     el('create').onclick = async () => {
       const btn = el('create');
@@ -207,9 +234,10 @@ function init(root, header) {
   /* ======================== host: intents ======================== */
 
   // Every action funnels through here on the host — including the host's own.
+  // With no room it is a solo match, and we are the host.
   function intent(msg) {
-    if (room?.isHost) onHostMessage(msg, selfId);
-    else room?.send(null, msg);
+    if (!room || room.isHost) onHostMessage(msg, selfId);
+    else room.send(null, msg);
   }
 
   function onJoin(peerId) {
@@ -254,6 +282,20 @@ function init(root, header) {
     }
 
     if (!seat) return; // not a player in this room
+
+    if (msg.t === 'addbot') {
+      if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length >= PLAYERS) return;
+      state.seats.push(botSeat(state.seats, msg.level));
+      pushAndRender();
+      return;
+    }
+
+    if (msg.t === 'kick') {
+      if (fromId !== state.hostId || state.phase !== 'lobby') return;
+      state.seats = state.seats.filter((s) => !(s.bot && s.id === msg.id));
+      pushAndRender();
+      return;
+    }
 
     if (msg.t === 'start') {
       if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length !== PLAYERS) return;
@@ -343,6 +385,23 @@ function init(root, header) {
   function pushAndRender() {
     if (room?.isHost) room.broadcast({ t: 'room', room: state });
     render();
+    driveBots();
+  }
+
+  /** Host only: if it is the computer's turn, think for a moment and play.
+   *  Rescheduled after every change, so a stale move never lands. */
+  function driveBots() {
+    clearTimeout(botTimer);
+    botTimer = null;
+    if (room && !room.isHost) return;
+    const g = state?.game;
+    if (!g || state.phase !== 'playing' || g.phase !== 'playing') return;
+    const seat = currentSeat(g);
+    if (!seat.bot) return;
+    botTimer = setTimeout(() => {
+      if (state?.game !== g || g.phase !== 'playing' || currentSeat(g) !== seat) return;
+      onHostMessage({ t: 'move', i: chooseSquare(g.board, markOf(g, seat.id), seat.bot) }, seat.id);
+    }, thinkDelay(450, 450));
   }
 
   /* ======================= client: messages ====================== */
@@ -385,21 +444,23 @@ function init(root, header) {
 
     // Seat order is mark order for round 1, so showing X and O here tells you
     // who opens before the game starts.
+    const isHost = selfId === state.hostId;
     el('seats').innerHTML = state.seats.map((s, i) => `
       <li>
         <div class="mk ${i === 0 ? 'x' : 'o'}">${i === 0 ? '✕' : '◯'}</div>
         <div class="nm">${esc(s.name)}</div>
-        <div class="badge">${s.id === state.hostId ? 'host' : ''}${s.id === selfId ? ' · you' : ''}</div>
+        <div class="badge">${seatBadge(s, state.hostId, selfId)}</div>
+        ${kickButton(s, isHost)}
       </li>`).join('');
+    bindBotControls(root, { isHost, full: state.seats.length >= PLAYERS, intent });
 
-    const isHost = selfId === state.hostId;
     const startBtn = el('start');
     startBtn.hidden = !isHost;
     startBtn.disabled = state.seats.length !== PLAYERS;
     startBtn.onclick = () => intent({ t: 'start' });
 
     el('starthint').textContent = isHost
-      ? (state.seats.length < PLAYERS ? 'Waiting for your opponent…' : 'Both players ready.')
+      ? (state.seats.length < PLAYERS ? 'Waiting for your opponent — or add a computer player.' : 'Both players ready.')
       : 'Waiting for the host to start…';
 
     const copy = el('copy');

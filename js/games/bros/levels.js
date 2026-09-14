@@ -54,11 +54,17 @@
 //
 // Jump apexes (see rules.js characters): the shortest jumper clears a rise of
 // 3 tiles with a few pixels to spare, so nothing on the *required* path ever
-// rises more than 3 in one jump — staircases go up in 1s and 2s, and row-11
-// blocks are head-bumpable from the ground but not standable. The widest
-// required gap is 4 tiles, which every character clears at a run. Anything
-// juicier (the row-10 platforms, coin arcs) is optional and reached by hops
-// from mid-level platforms.
+// rises more than 3 in one jump — staircases go up in 1s and 2s. ?- and
+// @-blocks sit exactly 3 tiles above whatever you jump from (row 12 over
+// row-15 ground), so everyone can bump them from below *and* hop up on top —
+// which is where an @-block's heart shard pops out. The widest required gap
+// is 4 tiles, which every character clears at a run. Anything juicier (the
+// row-10 platforms, coin arcs, gems) is optional and reached by hops from
+// mid-level platforms — but reachable by every character, not just Gil.
+//
+// test/bros-reach.mjs checks all of that against the real physics: it
+// searches every world for each character and lists anything they can't
+// collect, bump or stand on. Run it after editing a world.
 
 export const TILE = 32;
 
@@ -113,8 +119,8 @@ export const WORLDS = [
       _(150),
       _(53) + 'ooo' + _(94),
       _(52) + '=====' + _(93),
-      _(22) + '?.?' + _(11) + 'BBB' + _(10) + 'o' + _(16) + '?' + _(30) + 'oo' + _(14) + '?.?' + _(6) + 'ooo' + _(25),
-      _(12) + 'ooo' + _(33) + '===' + _(32) + 'oooo' + _(9) + g(4) + _(20) + '=======' + _(23),
+      _(36) + 'BBB' + _(10) + 'o' + _(47) + 'oo' + _(14) + '?.?' + _(6) + 'ooo' + _(25),
+      _(12) + 'ooo' + _(7) + '?.?' + _(23) + '===' + _(15) + '?' + _(16) + 'oooo' + _(9) + g(4) + _(20) + '=======' + _(23),
       _(94) + g(8) + _(34) + '|' + _(13),
       _(2) + 'S' + _(13) + 'E' + _(23) + 'E' + _(14) + 'E' + _(14) + 'E' + _(3) + 'E' + _(2) + 'C' + _(14) + g(12) + _(8) + 'E' + _(3) + 'E' + _(16) + '|' + _(2) + '|' + _(7) + 'F' + _(5),
       g(31) + _(3) + g(27) + _(3) + g(20) + _(2) + g(36) + _(3) + g(25),
@@ -123,7 +129,7 @@ export const WORLDS = [
       put(8, 15, '!');  put(8, 8, 'G');       // the first spring, and what it's for
       put(54, 6, 'G');                        // over the high platform
       put(98, 8, 'G');                        // over the hill
-      put(30, 11, '@');
+      put(30, 12, '@');
       put(44, 13, 'Z');
       put(120, 13, 'N');
     }),
@@ -160,7 +166,7 @@ export const WORLDS = [
       _(150),
       _(150),
       _(56) + 'ooo' + _(91),
-      _(20) + '?' + _(27) + '?' + _(11) + 'BB?BB' + _(25) + 'ooo' + _(57),
+      _(20) + '?' + _(39) + 'BB?BB' + _(25) + 'ooo' + _(57),
       _(54) + '======' + _(29) + '=====' + _(56),
       _(137) + '|' + _(12),
       _(2) + 'S' + _(9) + 'E' + _(24) + 'E' + _(6) + '^^^' + _(3) + 'X' + _(19) + 'E' + _(4) + 'C' + _(2) + '^^^' + _(3) + 'X' + _(15) + 'E' + _(4) + '^^^' + _(5) + 'X' + _(12) + 'X' + _(7) + '|' + _(2) + '|' + _(5) + 'F' + _(6),
@@ -169,8 +175,8 @@ export const WORLDS = [
     ], (put) => {
       put(25, 15, '!'); put(25, 7, 'G');
       put(57, 7, 'G');
-      put(91, 7, 'G');
-      put(48, 11, '@');
+      put(91, 8, 'G');
+      put(48, 12, '@');
       put(66, 13, 'W');                       // right before the spike run
       put(98, 13, 'Z');
     }),
@@ -207,17 +213,17 @@ export const WORLDS = [
       _(150),
       _(150),
       _(150),
-      _(15) + '?' + _(19) + 'BBB' + _(12) + 'oooo' + _(41) + '?' + _(15) + 'oooo' + _(35),
-      _(25) + 'ooo' + _(8) + 'o' + _(12) + '======' + _(23) + '=======' + _(23) + '========' + _(34),
+      _(35) + 'BBB' + _(12) + 'oooo' + _(57) + 'oooo' + _(35),
+      _(15) + '?' + _(9) + 'ooo' + _(8) + 'o' + _(12) + '======' + _(23) + '=======' + _(23) + '========' + _(34),
       _(135) + '|' + _(14),
       _(2) + 'S' + _(17) + 'E' + _(23) + 'X' + _(23) + 'E' + _(5) + 'C' + _(15) + 'X' + _(12) + 'E' + _(18) + 'X' + _(9) + '|' + _(2) + '|' + _(6) + 'F' + _(7),
       g(25) + _(3) + g(22) + _(4) + g(26) + _(3) + g(27) + _(4) + g(36),
       g(25) + _(3) + g(22) + _(4) + g(26) + _(3) + g(27) + _(4) + g(36),
     ], (put) => {
-      put(52, 7, 'G');
-      put(81, 7, 'G');
+      put(52, 8, 'G');
+      put(81, 8, 'G');
       put(128, 15, '!'); put(128, 8, 'G');
-      put(95, 11, '@');
+      put(95, 12, '@');
       put(10, 13, 'Z');
       put(40, 13, 'N');
     }),
@@ -254,16 +260,16 @@ export const WORLDS = [
       _(150),
       _(150),
       _(150),
-      _(12) + '?' + _(28) + '?' + _(6) + 'oo' + _(28) + 'B?B' + _(15) + 'oo' + _(52),
-      _(23) + 'o' + _(22) + '======' + _(21) + 'o' + _(20) + '======' + _(26) + 'o' + _(11) + g(4) + _(8),
+      _(41) + '?' + _(6) + 'oo' + _(46) + 'oo' + _(52),
+      _(12) + '?' + _(10) + 'o' + _(22) + '======' + _(21) + 'o' + _(4) + 'B?B' + _(13) + '======' + _(26) + 'o' + _(11) + g(4) + _(8),
       _(30) + 'BB' + _(28) + 'BB' + _(26) + 'BB' + _(28) + 'BB' + _(16) + g(6) + _(8),
       _(2) + 'S' + _(14) + 'E' + _(12) + 'BB' + _(3) + 'X' + _(19) + 'E' + _(4) + 'BB' + _(3) + 'X' + _(2) + 'C' + _(13) + 'E' + _(5) + 'BB' + _(2) + 'X' + _(12) + 'E' + _(6) + 'X' + _(5) + 'BB' + _(2) + 'E' + _(9) + 'X' + _(1) + g(8) + _(4) + 'F' + _(3),
       g(22) + _(3) + g(22) + _(4) + g(21) + _(3) + g(20) + _(4) + g(26) + _(3) + g(22),
       g(22) + '~~~' + g(22) + '~~~~' + g(21) + '~~~' + g(20) + '~~~~' + g(26) + '~~~' + g(22),
     ], (put) => {
-      put(48, 7, 'G');
-      put(96, 7, 'G');
-      put(140, 7, 'G');
+      put(48, 8, 'G');
+      put(96, 8, 'G');
+      put(140, 8, 'G');
       put(41, 11, '@');
       put(27, 13, 'W');
       put(100, 13, 'Z');
@@ -346,7 +352,7 @@ export const WORLDS = [
       rect(21, 16, 40, 16, '#'); rect(21, 13, 40, 15, 'w');
       put(30, 15, 'G'); put(25, 14, 'oo'); put(35, 14, 'oo'); put(33, 15, '^^'); put(28, 14, 'Y');
       // Bank B
-      rect(41, 12, 60, 16, '#'); put(46, 11, 'E'); put(54, 11, 'E'); put(50, 8, '?'); put(44, 10, 'oo'); put(57, 10, 'N');
+      rect(41, 12, 60, 16, '#'); put(46, 11, 'E'); put(54, 11, 'E'); put(50, 9, '?'); put(44, 10, 'oo'); put(57, 10, 'N');
       // The shaft — a flooded tower you swim up; a doorway at the bottom, a wall to climb over at the top
       rect(61, 16, 75, 16, '#'); rect(61, 4, 75, 15, 'w'); rect(60, 3, 60, 10, '#'); rect(76, 5, 76, 16, '#');
       put(66, 10, '==='); put(63, 8, 'o'); put(63, 6, 'o'); put(70, 12, 'o'); put(70, 9, 'o');
@@ -396,7 +402,7 @@ export const WORLDS = [
       // Rooftop D — high, with a beam lying across the roof
       rect(56, 7, 66, 16, '#'); put(60, 6, 'llll'); put(58, 4, 'oo'); put(64, 4, 'oo');
       // Rooftop E — checkpoint, hopper, heart
-      rect(70, 10, 84, 16, '#'); put(72, 9, 'C'); put(78, 9, 'J'); put(75, 6, '?@?'); put(82, 9, 'E');
+      rect(70, 10, 84, 16, '#'); put(72, 9, 'C'); put(78, 9, 'J'); put(75, 7, '?@?'); put(82, 9, 'E');
       // The long mover through a beam
       put(86, 10, 'M'); put(87, 10, '--------------'); rect(93, 4, 93, 9, 'L');
       // Rooftop F — spiker, magnet, a spring to the sky gem
@@ -443,14 +449,14 @@ export const WORLDS = [
       rect(48, 16, 62, 16, '#'); rect(48, 11, 62, 15, 'w'); put(55, 13, 'Y'); put(56, 15, 'G'); put(51, 13, 'oo'); put(59, 13, 'oo');
       rect(63, 10, 66, 16, '#');
       // The gantry — checkpoint, walker, spiker, a heart, a ward for what's next
-      rect(67, 12, 80, 16, '#'); put(69, 11, 'C'); put(74, 11, 'E'); put(78, 11, 'X'); put(72, 8, '?@?'); put(70, 10, 'W');
+      rect(67, 12, 80, 16, '#'); put(69, 11, 'C'); put(74, 11, 'E'); put(78, 11, 'X'); put(72, 9, '?@?'); put(70, 10, 'W');
       // The mover over the lava, through a beam
       rect(81, 16, 96, 16, '~'); put(82, 11, 'M'); put(83, 11, '-------------'); rect(89, 5, 89, 10, 'L');
       // The last approach — hopper, flyer, a spring to the gem
       rect(97, 12, 110, 16, '#'); put(102, 11, 'J'); put(106, 7, 'Y'); put(108, 12, '!'); put(108, 5, 'G'); put(100, 9, 'oo');
       // A low wall the boss can't clear, and the arena
       rect(110, 10, 110, 11, '|');
-      rect(111, 12, 138, 16, '#'); put(128, 11, 'Q'); put(118, 8, '?B?'); put(132, 9, '==='); put(136, 6, '==='); put(137, 4, 'G');
+      rect(111, 12, 138, 16, '#'); put(128, 11, 'Q'); put(118, 9, '?B?'); put(132, 9, '==='); put(136, 6, '==='); put(137, 4, 'G');
       put(114, 10, 'oo'); put(124, 10, 'oo');
       // The gate opens when the boss falls
       rect(139, 12, 149, 16, '#'); rect(139, 6, 139, 11, 'D'); put(146, 11, 'F');

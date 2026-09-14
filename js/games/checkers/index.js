@@ -17,6 +17,11 @@
 // Only pieces that can legally move are marked movable. Captures are
 // compulsory, so while one is on, those are exactly the pieces that can take.
 
+//
+// ---- The computer ----
+// As in chess: a computer seat (js/bots.js), solo or seated by a host, played
+// by `driveBots` through `onHostMessage`.
+
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
   PLAYERS,
@@ -24,6 +29,8 @@ import {
   legalMoves, movesFrom, mustCapture,
   applyMove, resign, offerDraw, acceptDraw, declineDraw, agreeDraw, rematch,
 } from './rules.js';
+import { chooseMove, evaluate } from './ai.js';
+import { botSeat, seatBadge, soloHTML, ADD_BOT_HTML, bindBotControls, kickButton, thinkDelay } from '../../bots.js';
 
 const GAME = 'checkers';
 
@@ -31,7 +38,7 @@ const LOBBY_HTML = `
   <div class="lobby">
     <div class="lobby-card">
       <h2>Checkers</h2>
-      <div class="lead">Play both sides on this device, or create a room and share the code with a friend. 2 players, standard 8×8 rules — captures are compulsory.</div>
+      <div class="lead">Play both sides on this device, play the computer, or create a room and share the code with a friend. 2 players, standard 8×8 rules — captures are compulsory.</div>
 
       <div class="field">
         <label for="checkers-name">Your name</label>
@@ -51,6 +58,7 @@ const LOBBY_HTML = `
           <button class="join">Join</button>
         </div>
       </div>
+${soloHTML()}
 
       <div class="err lobbyerr"></div>
     </div>
@@ -68,6 +76,7 @@ const WAIT_HTML = `
         <button class="copy">Copy code</button>
       </div>
       <ul class="seats"></ul>
+${ADD_BOT_HTML}
       <button class="primary start">Start game</button>
       <div class="hint starthint"></div>
       <div class="err waiterr"></div>
@@ -115,6 +124,7 @@ function init(root, header) {
   let hops = [];        // squares it has been walked to so far, mid multi-jump
   let drag = null;      // { from, pointerId, x0, y0, size, moved, wasSelected, ghost }
   let hideOverFor = 0;  // game number whose result card was dismissed to see the board
+  let botTimer = null;  // host: the computer's pending move or draw answer
 
   const el = (sel) => root.querySelector('.' + sel);
 
@@ -122,7 +132,7 @@ function init(root, header) {
                      '<button class="leave" hidden>Leave room</button>';
   const leaveBtn = header.querySelector('.leave');
   leaveBtn.onclick = () => {
-    if (local) {
+    if (local || !room) {
       if (state?.game?.phase === 'playing' && !confirm('End this game and go back to the lobby?')) return;
     } else if (!confirm('Leave the room? This ends the game for you.')) {
       return;
@@ -133,6 +143,8 @@ function init(root, header) {
 
   function teardown() {
     endDrag();
+    clearTimeout(botTimer);
+    botTimer = null;
     room?.close();
     room = null; state = null; selfId = null;
     local = false; selected = null; hops = []; hideOverFor = 0;
@@ -176,6 +188,18 @@ function init(root, header) {
       leaveBtn.textContent = 'End game';
       leaveBtn.hidden = false;
       render();
+    };
+
+    // No room: this browser hosts a game against the computer.
+    el('solo').onclick = () => {
+      takeName();
+      selfId = 'you';
+      const seats = [{ id: selfId, name: myName, connected: true }];
+      seats.push(botSeat(seats, el('sololevel').value));
+      state = { phase: 'lobby', code: null, hostId: selfId, seats, game: null };
+      leaveBtn.textContent = 'End game';
+      leaveBtn.hidden = false;
+      intent({ t: 'start' });
     };
 
     el('create').onclick = async () => {
@@ -235,8 +259,8 @@ function init(root, header) {
   // everyone's, applied as whoever is to move.
   function intent(msg) {
     if (local) onHostMessage(msg, currentSeat(state.game).id);
-    else if (room?.isHost) onHostMessage(msg, selfId);
-    else room?.send(null, msg);
+    else if (!room || room.isHost) onHostMessage(msg, selfId);
+    else room.send(null, msg);
   }
 
   function onJoin(peerId) {
@@ -281,6 +305,20 @@ function init(root, header) {
 
     if (!seat) return; // not a player in this room
 
+    if (msg.t === 'addbot') {
+      if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length >= PLAYERS) return;
+      state.seats.push(botSeat(state.seats, msg.level));
+      pushAndRender();
+      return;
+    }
+
+    if (msg.t === 'kick') {
+      if (fromId !== state.hostId || state.phase !== 'lobby') return;
+      state.seats = state.seats.filter((s) => !(s.bot && s.id === msg.id));
+      pushAndRender();
+      return;
+    }
+
     if (msg.t === 'start') {
       if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length !== PLAYERS) return;
       state.phase = 'playing';
@@ -315,6 +353,38 @@ function init(root, header) {
   function pushAndRender() {
     if (room?.isHost) room.broadcast({ t: 'room', room: state });
     render();
+    driveBots();
+  }
+
+  /** Host only: let a computer seat take its move — or answer a draw offered
+   *  to it, which it takes only when it thinks it's losing. */
+  function driveBots() {
+    clearTimeout(botTimer);
+    botTimer = null;
+    if (local || (room && !room.isHost)) return;
+    const g = state?.game;
+    if (!g || state.phase !== 'playing' || g.phase !== 'playing' || !state.seats.every((s) => s.connected)) return;
+    const game = g.game;
+    const ply = g.history.length;
+    const stale = () => state?.game !== g || g.game !== game || g.phase !== 'playing' || g.history.length !== ply;
+
+    const offeredTo = g.drawOffer && state.seats.find((s) => s.id !== g.drawOffer);
+    if (offeredTo?.bot) {
+      botTimer = setTimeout(() => {
+        if (stale() || !g.drawOffer) return;
+        const mine = colourOfSeat(g, offeredTo.id) === g.pos.turn ? evaluate(g.pos) : -evaluate(g.pos);
+        onHostMessage({ t: mine < -100 ? 'draw-accept' : 'draw-decline' }, offeredTo.id);
+      }, thinkDelay(700));
+      return;
+    }
+
+    const seat = currentSeat(g);
+    if (!seat.bot) return;
+    botTimer = setTimeout(() => {
+      if (stale()) return;
+      const m = chooseMove(g.pos, seat.bot);
+      if (m) onHostMessage({ t: 'move', from: m.from, path: m.path }, seat.id);
+    }, thinkDelay(400, 350));
   }
 
   /* ======================= client: messages ====================== */
@@ -355,20 +425,22 @@ function init(root, header) {
     if (!root.querySelector('.codeval')) root.innerHTML = WAIT_HTML;
     el('codeval').textContent = state.code;
 
+    const isHost = selfId === state.hostId;
     el('seats').innerHTML = state.seats.map((s) => `
       <li>
         <div class="nm">${esc(s.name)}</div>
-        <div class="badge">${s.id === state.hostId ? 'host' : ''}${s.id === selfId ? ' · you' : ''}</div>
+        <div class="badge">${seatBadge(s, state.hostId, selfId)}</div>
+        ${kickButton(s, isHost)}
       </li>`).join('');
+    bindBotControls(root, { isHost, full: state.seats.length >= PLAYERS, intent });
 
-    const isHost = selfId === state.hostId;
     const startBtn = el('start');
     startBtn.hidden = !isHost;
     startBtn.disabled = state.seats.length !== PLAYERS;
     startBtn.onclick = () => intent({ t: 'start' });
 
     el('starthint').textContent = isHost
-      ? (state.seats.length < PLAYERS ? 'Waiting for your opponent…' : 'Both players ready. Colours are drawn at random.')
+      ? (state.seats.length < PLAYERS ? 'Waiting for your opponent — or add a computer player.' : 'Both players ready. Colours are drawn at random.')
       : 'Waiting for the host to start… Colours are drawn at random.';
 
     const copy = el('copy');

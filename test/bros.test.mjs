@@ -13,6 +13,7 @@ import {
   createRun, applyCoin, applyBump, applyGem, applyPickup, applyStomp, applyDeath, applyFlag,
   nextWorldId, moverPos, windAt, laserPhase, LASER_PERIOD, LASER_ON,
   applyKey, unlockedWorlds, recordClear, fmtTime,
+  isOut, livesOf, checkWipe,
 } from '../js/games/bros/rules.js';
 import { solidAt, hazardAt, registerCustom } from '../js/games/bros/levels.js';
 import { encodeLevel, decodeLevel, sanitiseLevel } from '../js/games/bros/share.js';
@@ -472,30 +473,87 @@ test('gems, pickups and hearts are refereed like coins', () => {
   assert.equal(applyPickup(run, 0, heartIdx), false, 'once');
 });
 
-test('the team shares lives; coins earn them back; the last one ends the run', () => {
-  const run = createRun('meadow', 2);
-  const start = run.lives;
-  assert.ok(start >= 3);
-  for (let i = 0; i < start - 1; i++) assert.equal(applyDeath(run, i % 2), true);
-  assert.equal(run.lives, 1);
-  assert.equal(run.over, false);
-
-  // Every coin on the map, then ?-blocks until the counter ticks over.
-  for (let i = 0; i < run.lv.coins.length; i++) applyCoin(run, i % 2, i);
-  for (let ty = 0; ty < run.lv.h && run.coinsTotal < COINS_PER_LIFE; ty++) {
-    for (let tx = 0; tx < run.lv.w && run.coinsTotal < COINS_PER_LIFE; tx++) {
+/** Bank team coins — every coin on the map, then ?-blocks — up to exactly
+ *  one 1-up's worth. */
+function earnOneUp(run) {
+  const goal = run.coinsTotal + COINS_PER_LIFE - (run.coinsTotal % COINS_PER_LIFE);
+  for (let i = 0; i < run.lv.coins.length && run.coinsTotal < goal; i++) applyCoin(run, i % 2, i);
+  for (let ty = 0; ty < run.lv.h && run.coinsTotal < goal; ty++) {
+    for (let tx = 0; tx < run.lv.w && run.coinsTotal < goal; tx++) {
       if (tileAt(run.lv, tx, ty) === '?') applyBump(run, 0, tx, ty);
     }
   }
-  assert.equal(run.coinsTotal, COINS_PER_LIFE);
-  assert.equal(run.lives, 2, `${COINS_PER_LIFE} team coins is a 1-up`);
+  assert.equal(run.coinsTotal, goal, 'the map holds enough coins for a 1-up');
+}
 
-  applyDeath(run, 0);
+test('each player has their own lives, and a death costs only the one who died', () => {
+  const run = createRun('meadow', 3);
+  const start = WORLD_BY_ID.get('meadow').lives;
+  assert.equal(start, 5);
+  assert.deepEqual(run.lives, [5, 5, 5]);
+  assert.equal(applyDeath(run, 1), true);
+  assert.deepEqual(run.lives, [5, 4, 5]);
+  assert.equal(livesOf(run, 1), 4);
+  assert.equal(run.scores[1].d, 1);
+});
+
+test('a player on no lives is out, but the run goes on while anyone has one', () => {
+  const run = createRun('meadow', 2);
+  for (let i = 0; i < 5; i++) assert.equal(applyDeath(run, 0), true);
+  assert.equal(isOut(run, 0), true);
+  assert.equal(isOut(run, 1), false);
+  assert.equal(run.over, false, 'one player out is not game over');
+  assert.equal(applyDeath(run, 0), false, 'an out player has nothing left to lose');
+  assert.equal(run.scores[0].d, 5, 'and the refused death is not scored');
+});
+
+test('a 1-up is for everyone, and brings a player who was out back in', () => {
+  const run = createRun('meadow', 2);
+  for (let i = 0; i < 5; i++) applyDeath(run, 0);
   applyDeath(run, 1);
-  assert.equal(run.lives, 0);
-  assert.equal(run.over, true, 'out of lives');
-  assert.equal(applyDeath(run, 0), false, 'nothing more to lose');
+  assert.deepEqual(run.lives, [0, 4]);
+  earnOneUp(run);
+  assert.deepEqual(run.lives, [1, 5], `${COINS_PER_LIFE} team coins is a 1-up each`);
+  assert.equal(isOut(run, 0), false, 'back in the game');
+});
+
+test('the run ends only when every player is out', () => {
+  const run = createRun('meadow', 2);
+  for (let i = 0; i < 5; i++) applyDeath(run, 0);
+  for (let i = 0; i < 4; i++) applyDeath(run, 1);
+  assert.equal(run.over, false);
+  applyDeath(run, 1);
+  assert.deepEqual(run.lives, [0, 0]);
+  assert.equal(run.over, true, 'everyone out');
+  assert.equal(applyDeath(run, 0), false);
   assert.equal(applyFlag(run, 0), false, 'and the flag no longer counts');
+});
+
+test('a player who disconnects does not hold a lost run open', () => {
+  const run = createRun('meadow', 2);
+  for (let i = 0; i < 5; i++) applyDeath(run, 0, [0]);    // seat 1 has left the room
+  assert.equal(run.over, true);
+
+  const still = createRun('meadow', 2);
+  for (let i = 0; i < 5; i++) applyDeath(still, 0);
+  assert.equal(still.over, false, 'with seat 1 still here, it still has lives');
+  assert.equal(checkWipe(still, [0]), true, 'until seat 1 goes');
+  assert.equal(still.over, true);
+});
+
+test('hard worlds give each player their own three lives', () => {
+  const run = createRun('meadow-hard', 2);
+  assert.deepEqual(run.lives, [3, 3]);
+});
+
+test('races have no lives, and coins never hand any out', () => {
+  const run = createRun('meadow', 2, { race: true });
+  assert.equal(run.lives, null);
+  earnOneUp(run);
+  assert.equal(run.lives, null);
+  for (let i = 0; i < 12; i++) assert.equal(applyDeath(run, 0), true, 'a death in a race just costs time');
+  assert.equal(run.over, false);
+  assert.equal(isOut(run, 0), false);
 });
 
 test('spikers refuse to be stomp-scored', () => {

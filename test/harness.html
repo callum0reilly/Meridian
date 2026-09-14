@@ -105,28 +105,38 @@ try {
   check(!$(A, '.rollbtn').disabled, "host can roll on the host's turn");
   check($(B, '.rollbtn').disabled, "joiner cannot roll on the host's turn");
 
-  let moves = 0, rolls = 0, bothLive = 0, capture = false, gotHome = false;
-  // The roll button self-locks for 400ms while the dice animates, so give each
-  // turn room to breathe rather than hammering it.
-  for (let i = 0; i < 120 && moves < 40; i++) {
+  // Rolls and moves are counted off the shared screen, not off our clicks:
+  // with one token in play the dice roll themselves, and a move with no real
+  // choice plays itself, so plenty of turns happen without anyone clicking.
+  let moves = 0, rolls = 0, bothLive = 0, capture = false, gotHome = false, sawAuto = false;
+  let lastBoard = tokenPositions(A), lastNewest = '';
+  const deadline = Date.now() + 45000;
+  while (Date.now() < deadline && moves < 40) {
     const aLive = !$(A, '.rollbtn').disabled, bLive = !$(B, '.rollbtn').disabled;
     if (aLive && bLive) bothLive++;              // must never happen
     const live = aLive ? A : (bLive ? B : null);
-    if (!live) { await sleep(120); continue; }
+    if (live) live.querySelector('.rollbtn').click();
+    const chooser = [A, B].find((p) => $(p, '.rollbtn').textContent === 'Pick a token' && p.querySelector('.token.movable'));
+    if (chooser) chooser.querySelector('.token.movable').dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    await sleep(150);
 
-    live.querySelector('.rollbtn').click();
-    rolls++;
-    await sleep(550);
-    const movable = live.querySelector('.token.movable');
-    if (movable) { movable.dispatchEvent(new MouseEvent('click', { bubbles: true })); moves++; }
-    await sleep(250);
+    const newest = $(A, '.logline')?.textContent || '';
+    if (newest !== lastNewest) { if (/rolled/.test(newest)) rolls++; lastNewest = newest; }
+    const board = tokenPositions(A);
+    if (board !== lastBoard) { moves++; lastBoard = board; }
 
     const log = $(A, '.logwrap').textContent;
     if (/knocked/.test(log)) capture = true;
     if (/got a token home/.test(log)) gotHome = true;
-    if (tokenPositions(A) !== tokenPositions(B)) throw new Error('boards drifted apart after move ' + moves);
+    if (/rolls itself/.test(log)) sawAuto = true;
+    // The joiner's copy lands a moment after the host's, so let it settle.
+    if (tokenPositions(A) !== tokenPositions(B)) {
+      await sleep(120);
+      if (tokenPositions(A) !== tokenPositions(B)) throw new Error('boards drifted apart after move ' + moves);
+    }
     if ($(A, '.over')) break;                    // somebody won
   }
+  check(sawAuto, 'a turn with one token in play rolled itself');
   check(rolls > 8, `rolled ${rolls} times across both players`);
   check(moves > 6, `played ${moves} moves through the host`);
   check(bothLive === 0, 'the two players were never able to act at the same time');

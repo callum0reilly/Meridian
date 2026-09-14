@@ -76,6 +76,26 @@
 #panel-ludo .dicerow { display: flex; align-items: center; gap: 12px; padding: 14px; }
 #panel-ludo .dicerow button { flex: 1; padding: 12px; }
 
+/* Nothing on the board: the miss count towards a free token, spelled out. */
+#panel-ludo .yardnote {
+  margin: 0 14px 14px; padding: 10px 12px; border-radius: 10px;
+  background: var(--panel-2); border: 1px solid var(--accent); font-size: 13px;
+}
+#panel-ludo .yn-head { font-weight: 600; margin-bottom: 6px; }
+#panel-ludo .yn-row { display: flex; align-items: center; gap: 10px; }
+#panel-ludo .yn-pips { display: flex; gap: 5px; }
+#panel-ludo .yn-pips i {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--muted); box-sizing: border-box;
+}
+#panel-ludo .yn-pips i.on { background: var(--danger); border-color: var(--danger); }
+#panel-ludo .yn-sub { color: var(--muted); font-size: 12px; margin-top: 6px; }
+#panel-ludo .yn-free { color: var(--accent); font-weight: 600; }
+#panel-ludo .yardcount {
+  fill: #fff; font-weight: 700; pointer-events: none;
+  paint-order: stroke; stroke: rgba(0,0,0,.4); stroke-width: .08;
+}
+
 #panel-ludo .logwrap { flex: 1; overflow-y: auto; padding: 0 14px 14px; }
 #panel-ludo .loghead {
   padding: 0 14px 6px; font-size: 11px; text-transform: uppercase;

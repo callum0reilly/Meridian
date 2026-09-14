@@ -9,6 +9,7 @@ import {
   legalMoves, canPlay, winningLine, isFull,
   applyMove, endRound, nextRound, resetMatch,
 } from '../js/games/xo/rules.js';
+import { chooseSquare, finishing } from '../js/games/xo/ai.js';
 
 /* ---------------- helpers ---------------- */
 
@@ -299,4 +300,56 @@ test('resetMatch clears the score but keeps the log', () => {
   assert.ok(s.board.every((c) => c === null));
   assert.equal(currentSeat(s).id, 'p0');
   assert.deepEqual(s.log, ['something happened']);
+});
+
+/* ---------------- the computer ---------------- */
+
+/** Play one round out, each seat choosing with its own function. */
+function playOut(s, choosers) {
+  while (s.phase === 'playing') {
+    const seat = currentSeat(s);
+    applyMove(s, seat.id, choosers[s.seats.indexOf(seat)](s.board, markOf(s, seat.id)));
+  }
+  return s.roundWinner;
+}
+
+const seededRng = (seed) => () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+
+test('the computer only ever picks an open square, and nothing on a full board', () => {
+  const board = ['X', 'O', 'X', null, 'O', null, 'O', 'X', null];
+  for (const level of ['easy', 'medium', 'hard']) {
+    for (let k = 0; k < 30; k++) assert.equal(board[chooseSquare(board, 'X', level)], null);
+  }
+  assert.equal(chooseSquare(Array(9).fill('X'), 'O', 'hard'), null);
+});
+
+test('medium and hard take a win before blocking one', () => {
+  // X can win at 2; O threatens at 5.
+  const board = ['X', 'X', null, 'O', 'O', null, null, null, null];
+  assert.equal(finishing(board, 'X'), 2);
+  for (const level of ['medium', 'hard']) assert.equal(chooseSquare(board, 'X', level), 2);
+  // Without a win of its own, it blocks.
+  const b2 = ['X', null, null, 'O', 'O', null, 'X', null, null];
+  for (const level of ['medium', 'hard']) assert.equal(chooseSquare(b2, 'X', level), 5);
+});
+
+test('hard never loses, whoever opens, against a random player', () => {
+  const rng = seededRng(11);
+  for (let game = 0; game < 200; game++) {
+    const s = createState(seats());
+    const hardSeat = game % 2;           // alternate who the computer is
+    const choosers = [];
+    choosers[hardSeat] = (b, m) => chooseSquare(b, m, 'hard', rng);
+    choosers[1 - hardSeat] = (b) => { const open = legalMoves(s); return open[Math.floor(rng() * open.length)]; };
+    const winner = playOut(s, choosers);
+    assert.notEqual(winner, s.seats[1 - hardSeat].id, `random beat hard in game ${game}`);
+  }
+});
+
+test('hard against hard is always a draw', () => {
+  for (let game = 0; game < 10; game++) {
+    const s = createState(seats());
+    const pick = (b, m) => chooseSquare(b, m, 'hard');
+    assert.equal(playOut(s, [pick, pick]), null);
+  }
 });

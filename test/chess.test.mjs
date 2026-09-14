@@ -319,3 +319,55 @@ test('the whole state survives the wire', () => {
   assert.deepEqual(structuredClone(s), s);
   assert.deepEqual(JSON.parse(JSON.stringify(s)), s);
 });
+
+/* ---------------- the computer ---------------- */
+
+import { chooseMove, evaluate } from '../js/games/chess/ai.js';
+
+const uci = (m) => squareName(m.from) + squareName(m.to) + (m.promo || '');
+const steady = () => 0.5;   // never blunders, and picks from the middle of any tie
+
+test('medium and hard find a back-rank mate in one', () => {
+  const pos = fromFEN('6k1/5ppp/8/8/8/8/5PPP/R5K1 w - - 0 1');
+  for (const level of ['medium', 'hard']) {
+    assert.equal(uci(chooseMove(pos, level, { rng: steady, timeMs: 400 })), 'a1a8', level);
+  }
+});
+
+test('medium and hard take a queen left hanging', () => {
+  const pos = fromFEN('rnb1kbnr/pppp1ppp/8/3q4/8/2N5/PPPPPPPP/R1BQKBNR w KQkq - 0 1');
+  for (const level of ['medium', 'hard']) {
+    assert.equal(uci(chooseMove(pos, level, { rng: steady, timeMs: 400 })), 'c3d5', level);
+  }
+});
+
+test('the computer promotes to a queen', () => {
+  const pos = fromFEN('8/P6k/8/8/8/8/8/K7 w - - 0 1');
+  assert.equal(uci(chooseMove(pos, 'hard', { rng: steady, timeMs: 300 })), 'a7a8q');
+});
+
+test('with no legal move the computer returns nothing', () => {
+  const mated = fromFEN('rnb1kbnr/pppp1ppp/8/4p3/6Pq/5P2/PPPPP2P/RNBQKBNR w KQkq - 1 3');
+  assert.equal(chooseMove(mated, 'hard'), null);
+  const stalemate = fromFEN('7k/5Q2/6K1/8/8/8/8/8 b - - 0 1');
+  assert.equal(chooseMove(stalemate, 'hard'), null);
+});
+
+test('evaluate is symmetric: the same position is worth the same to either side', () => {
+  const start = fromFEN(START_FEN);
+  assert.equal(evaluate(start), 0);
+  const upAQueen = fromFEN('rnb1kbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1');
+  assert.ok(evaluate(upAQueen) > 800);
+  assert.ok(evaluate({ ...upAQueen, turn: 'b' }) < -800);
+});
+
+test('computers at every level play a game of legal moves through the match rules', () => {
+  const s = match();
+  const levels = ['easy', 'medium'];
+  for (let ply = 0; ply < 40 && s.phase === 'playing'; ply++) {
+    const seat = currentSeat(s);
+    const m = chooseMove(s.pos, levels[ply % 2], { timeMs: 40 });
+    applyMove(s, seat.id, { from: m.from, to: m.to, promo: m.promo });
+  }
+  assert.ok(s.sans.length > 0);
+});

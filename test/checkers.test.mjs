@@ -261,3 +261,41 @@ test('the whole state survives the wire', () => {
   assert.deepEqual(structuredClone(s), s);
   assert.deepEqual(JSON.parse(JSON.stringify(s)), s);
 });
+
+/* ---------------- the computer ---------------- */
+
+import { chooseMove, evaluate } from '../js/games/checkers/ai.js';
+
+const steady = () => 0.5;
+
+test('medium and hard take the double jump that crowns over a single capture', () => {
+  // 14x23x32 takes two and crowns; 1x10 takes one and loses 14 straight back.
+  const pos = fromFEN('B:W6,18,27:B1,14');
+  assert.ok(legalMoves(pos).length > 1, 'there is a real choice to make');
+  for (const level of ['medium', 'hard']) {
+    assert.equal(toNotation(chooseMove(pos, level, { rng: steady, timeMs: 300 })), '14x23x32', level);
+  }
+});
+
+test('a forced move is played without searching, and no move returns nothing', () => {
+  const forced = fromFEN('B:W18,27:B14');
+  assert.equal(toNotation(chooseMove(forced, 'hard')), '14x23x32');
+  assert.equal(chooseMove(fromFEN('B:W18:B'), 'hard'), null);
+});
+
+test('evaluate favours the side with more material, and kings over men', () => {
+  assert.equal(evaluate(fromFEN(START_FEN)), 0);
+  assert.ok(evaluate(fromFEN('B:W21:B1,2')) > 50);
+  assert.ok(evaluate(fromFEN('B:WK21:B1')) < 0, 'a king outweighs a man');
+});
+
+test('computers play a game of legal moves through the match rules', () => {
+  const s = match();
+  const levels = ['easy', 'hard'];
+  for (let ply = 0; ply < 40 && s.phase === 'playing'; ply++) {
+    const seat = currentSeat(s);
+    const m = chooseMove(s.pos, levels[ply % 2], { timeMs: 40 });
+    applyMove(s, seat.id, { from: m.from, path: m.path });
+  }
+  assert.ok(s.history.length > 0);
+});

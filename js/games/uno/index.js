@@ -19,6 +19,12 @@
 // renders from `viewFor(selfId)` too, so the host's screen shows exactly what a
 // client's would — no accidental privilege, and one render path to debug.
 
+//
+// ---- The computer ----
+// Computer seats (js/bots.js) are played by `driveBots` on the host, which
+// hands each one `viewFor(itsId)` — the same redacted view a person in that
+// seat would get — so a bot can't read hands or know a +4 was a bluff.
+
 import { createRoom, joinRoom, normaliseCode } from '../../net.js';
 import {
   COLORS, MAX_PLAYERS, MIN_PLAYERS, DEFAULT_TARGET,
@@ -26,6 +32,8 @@ import {
   applyPlay, applyDraw, applyPass, applyTakeDraw, applyChallenge,
   applySayUno, applyCatch, applyOpeningColor, nextRound, advance,
 } from './rules.js';
+import { chooseAction, remembersUno, CATCH_CHANCE } from './ai.js';
+import { botSeat, seatBadge, soloHTML, ADD_BOT_HTML, bindBotControls, kickButton, thinkDelay } from '../../bots.js';
 
 const GAME = 'uno';
 
@@ -33,7 +41,7 @@ const LOBBY_HTML = `
   <div class="lobby">
     <div class="lobby-card">
       <h2>Uno</h2>
-      <div class="lead">Create a room and share the code, or enter a friend's code to join. 2–10 players, first to ${DEFAULT_TARGET} points.</div>
+      <div class="lead">Create a room and share the code, enter a friend's code to join, or play the computer. 2–10 players, first to ${DEFAULT_TARGET} points.</div>
 
       <div class="field">
         <label for="uno-name">Your name</label>
@@ -52,6 +60,7 @@ const LOBBY_HTML = `
           <button class="join">Join</button>
         </div>
       </div>
+${soloHTML({ counts: 5 })}
 
       <div class="err lobbyerr"></div>
     </div>
@@ -69,6 +78,7 @@ const WAIT_HTML = `
         <button class="copy">Copy code</button>
       </div>
       <ul class="seats"></ul>
+${ADD_BOT_HTML}
       <button class="primary start">Start game</button>
       <div class="hint starthint"></div>
       <div class="err waiterr"></div>
@@ -117,6 +127,10 @@ function init(root, header) {
   let selfId = null;
   let myName = 'Player';
   let picking = null;   // card id waiting on a colour choice
+  let botTimer = null;  // host: the computer's pending turn
+  let catchTimer = null; // host: a computer about to catch someone who didn't call Uno
+  let catchKey = '';    // which forgotten Uno the computers have already decided about
+  let version = 0;      // bumped on every change, so a stale bot timer knows it
 
   const el = (sel) => root.querySelector('.' + sel);
 
@@ -124,15 +138,20 @@ function init(root, header) {
                      '<button class="leave" hidden>Leave room</button>';
   const leaveBtn = header.querySelector('.leave');
   leaveBtn.onclick = () => {
-    if (!confirm('Leave the room? This ends the game for you.')) return;
+    const q = room ? 'Leave the room? This ends the game for you.' : 'End this match and go back to the lobby?';
+    if (!confirm(q)) return;
     teardown();
     showLobby();
   };
 
   function teardown() {
+    clearTimeout(botTimer);
+    clearTimeout(catchTimer);
+    botTimer = null; catchTimer = null; catchKey = '';
     room?.close();
     room = null; state = null; view = null; selfId = null; picking = null;
     leaveBtn.hidden = true;
+    leaveBtn.textContent = 'Leave room';
   }
 
   /* ============================ lobby ============================ */
@@ -152,6 +171,20 @@ function init(root, header) {
       return myName;
     };
     const busy = (btn, label) => { btn.disabled = true; btn.textContent = label; };
+
+    // No room: this browser hosts a match against computer players.
+    el('solo').onclick = () => {
+      takeName();
+      const level = el('sololevel').value;
+      const count = Number(el('solocount').value) || 1;
+      selfId = 'you';
+      const seats = [{ id: selfId, name: myName, color: COLORS[0], connected: true }];
+      for (let k = 0; k < count; k++) seats.push(botSeat(seats, level, { color: COLORS[seats.length % COLORS.length] }));
+      state = { phase: 'lobby', code: null, hostId: selfId, target: DEFAULT_TARGET, seats, game: null };
+      leaveBtn.textContent = 'End game';
+      leaveBtn.hidden = false;
+      intent({ t: 'start' });
+    };
 
     el('create').onclick = async () => {
       const btn = el('create');
@@ -204,10 +237,11 @@ function init(root, header) {
 
   /* ======================== host: intents ======================== */
 
-  // Every action funnels through here, the host's own clicks included.
+  // Every action funnels through here, the host's own clicks included. With no
+  // room it is a solo match against the computer, and we are the host.
   function intent(msg) {
-    if (room?.isHost) onHostMessage(msg, selfId);
-    else room?.send(null, msg);
+    if (!room || room.isHost) onHostMessage(msg, selfId);
+    else room.send(null, msg);
   }
 
   function onJoin(peerId) {
@@ -264,6 +298,21 @@ function init(root, header) {
     }
 
     if (!seat) return; // not a player in this room
+
+    if (msg.t === 'addbot') {
+      if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length >= MAX_PLAYERS) return;
+      state.seats.push(botSeat(state.seats, msg.level, { color: COLORS[state.seats.length % COLORS.length] }));
+      pushAndRender();
+      return;
+    }
+
+    if (msg.t === 'kick') {
+      if (fromId !== state.hostId || state.phase !== 'lobby') return;
+      state.seats = state.seats.filter((s) => !(s.bot && s.id === msg.id));
+      state.seats.forEach((s, i) => { s.color = COLORS[i % COLORS.length]; });
+      pushAndRender();
+      return;
+    }
 
     if (msg.t === 'start') {
       if (fromId !== state.hostId || state.phase !== 'lobby' || state.seats.length < MIN_PLAYERS) return;
@@ -438,11 +487,55 @@ function init(root, header) {
   }
 
   function pushAndRender() {
-    if (room?.isHost) {
-      for (const peerId of room.peerIds()) room.send(peerId, { t: 'room', room: viewFor(peerId) });
+    if (!room || room.isHost) {
+      if (room) for (const peerId of room.peerIds()) room.send(peerId, { t: 'room', room: viewFor(peerId) });
       view = viewFor(selfId);
     }
+    version += 1;
     render();
+    driveBots();
+  }
+
+  /** Host only: take a computer player's turn after a moment's thought, and
+   *  let a computer catch anyone who forgot to call Uno. */
+  function driveBots() {
+    clearTimeout(botTimer);
+    botTimer = null;
+    if (room && !room.isHost) return;
+    const g = state?.game;
+    if (!g || state.phase !== 'playing' || g.phase !== 'playing') return;
+
+    // Each forgotten Uno gets one decision — made once, not re-rolled on
+    // every change — and a pause first, so a person still has time to call it.
+    const target = g.catchable?.playerId;
+    const key = target ? `${target}:${g.discard.length}` : '';
+    if (key !== catchKey) {
+      catchKey = key;
+      clearTimeout(catchTimer);
+      catchTimer = null;
+      const catcher = target && state.seats
+        .filter((s) => s.bot && s.connected && s.id !== target)
+        .sort((a, b) => CATCH_CHANCE[b.bot] - CATCH_CHANCE[a.bot])[0];
+      if (catcher && Math.random() < CATCH_CHANCE[catcher.bot]) {
+        catchTimer = setTimeout(() => {
+          catchTimer = null;
+          if (state?.game === g && g.catchable?.playerId === target) onHostMessage({ t: 'catch' }, catcher.id);
+        }, thinkDelay(1600, 1400));
+      }
+    }
+
+    const seat = currentSeat(g);
+    if (!seat.bot) return;
+    const v = version;
+    botTimer = setTimeout(() => {
+      if (v !== version || state?.game !== g || g.phase !== 'playing' || currentSeat(g) !== seat) return;
+      const mine = viewFor(seat.id).game;
+      const act = chooseAction(mine, seat.id, seat.bot);
+      if (act.t === 'play' && mine.hand.length === 2 && !g.said[seat.id] && remembersUno(seat.bot)) {
+        onHostMessage({ t: 'uno' }, seat.id);
+      }
+      onHostMessage(act, seat.id);
+    }, thinkDelay(700, 600));
   }
 
   /* ======================= client: messages ====================== */
@@ -483,21 +576,23 @@ function init(root, header) {
     if (!root.querySelector('.codeval')) root.innerHTML = WAIT_HTML;
     el('codeval').textContent = view.code;
 
+    const isHost = selfId === view.hostId;
     el('seats').innerHTML = view.seats.map((s) => `
       <li>
         <div class="chip ${s.color}"></div>
         <div class="nm">${esc(s.name)}</div>
-        <div class="badge">${s.id === view.hostId ? 'host' : ''}${s.id === selfId ? ' · you' : ''}</div>
+        <div class="badge">${seatBadge(s, view.hostId, selfId)}</div>
+        ${kickButton(s, isHost)}
       </li>`).join('');
+    bindBotControls(root, { isHost, full: view.seats.length >= MAX_PLAYERS, intent });
 
-    const isHost = selfId === view.hostId;
     const startBtn = el('start');
     startBtn.hidden = !isHost;
     startBtn.disabled = view.seats.length < MIN_PLAYERS;
     startBtn.onclick = () => intent({ t: 'start' });
 
     el('starthint').textContent = isHost
-      ? (view.seats.length < MIN_PLAYERS ? 'Waiting for at least one more player…' : `${view.seats.length} players ready.`)
+      ? (view.seats.length < MIN_PLAYERS ? 'Waiting for at least one more player — or add a computer player.' : `${view.seats.length} players ready.`)
       : 'Waiting for the host to start…';
 
     const copy = el('copy');

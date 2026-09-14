@@ -4,10 +4,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-  COLORS, START, SAFE, TRACK_LEN, HOME_STEP, LAST_TRACK_STEP, YARD,
-  createState, legalMoves, applyRoll, applyMove, passTurn, currentSeat,
-  absSquare, isHome, inHomeColumn, tokensAt, isBlock, rollDice,
+  COLORS, START, SAFE, TRACK_LEN, HOME_STEP, LAST_TRACK_STEP, YARD, YARD_MISSES,
+  createState, legalMoves, applyRoll, applyMove, passTurn, currentSeat, releaseToken,
+  absSquare, isHome, inHomeColumn, tokensAt, isBlock, rollDice, tokensInPlay, autoRolls, onlyMove,
 } from '../js/games/ludo/rules.js';
+import { chooseMove } from '../js/games/ludo/ai.js';
 import { TRACK, HOME_COLUMN, YARD_SLOTS, HOME_SLOTS, GRID } from '../js/games/ludo/board.js';
 
 const seats = (n) => COLORS.slice(0, n).map((color, i) => ({
@@ -317,6 +318,153 @@ test('getting the last token home wins and ends the game', () => {
   assert.equal(s.phase, 'over');
   assert.equal(s.winner, 'red');
   assert.ok(!res.extraTurn, 'the winning move should not hand out another go');
+});
+
+test('getting a token home (but not the last) buys another go', () => {
+  const s = createState(seats(2));
+  s.tokens.red = [HOME_STEP - 2, 10, YARD, YARD];
+  applyRoll(s, 2);
+  const res = applyMove(s, 0);
+  assert.ok(isHome(s.tokens.red[0]));
+  assert.ok(res.extraTurn, 'reaching home should keep the turn');
+});
+
+/* ---------------- house rules: automatic turns ---------------- */
+
+test('the dice roll themselves only with exactly one token in play', () => {
+  const s = createState(seats(2));
+  assert.equal(autoRolls(s), false, 'all in the yard: the player rolls');
+  s.tokens.red = [12, YARD, YARD, HOME_STEP];
+  assert.equal(tokensInPlay(s, 'red'), 1);
+  assert.equal(autoRolls(s), true);
+  s.tokens.red = [12, 53, YARD, YARD];               // one on the track, one in the home column
+  assert.equal(autoRolls(s), false);
+  s.tokens.red = [12, YARD, YARD, YARD];
+  applyRoll(s, 3);
+  assert.equal(autoRolls(s), false, 'not once the dice are already rolled');
+});
+
+test('onlyMove plays a forced move, and treats identical yard tokens as one', () => {
+  const s = createState(seats(2));
+  applyRoll(s, 6);
+  assert.deepEqual(s.moves, [0, 1, 2, 3]);
+  assert.equal(onlyMove(s), 0, 'four tokens leaving the yard is one choice');
+
+  const t = createState(seats(2));
+  t.tokens.red = [12, YARD, YARD, YARD];
+  applyRoll(t, 4);
+  assert.equal(onlyMove(t), 0);
+
+  const u = createState(seats(2));
+  u.tokens.red = [12, YARD, YARD, YARD];
+  applyRoll(u, 6);
+  assert.equal(onlyMove(u), null, 'a 6 with tokens waiting is a real choice: come out or move on');
+});
+
+/* ---------------- house rules: nothing on the board ---------------- */
+
+test('with nothing on the board, misses count up across turns', () => {
+  const s = createState(seats(2));
+  let res = applyRoll(s, 2);
+  assert.ok(res.stuck);
+  assert.equal(res.misses, 1);
+  assert.equal(res.release, false);
+  passTurn(s);                                        // green
+  applyRoll(s, 4);
+  passTurn(s);                                        // back to red
+  res = applyRoll(s, 5);
+  assert.equal(res.misses, 2, 'the count survives the turn passing');
+  assert.equal(s.misses.green, 1, 'each colour keeps its own count');
+});
+
+test(`the ${YARD_MISSES}rd miss releases a token onto the start square`, () => {
+  const s = createState(seats(2));
+  s.misses.red = YARD_MISSES - 1;
+  const res = applyRoll(s, 3);
+  assert.ok(res.release);
+  const i = releaseToken(s);
+  assert.equal(s.tokens.red[i], 0);
+  assert.equal(absSquare('red', 0), START.red);
+  assert.equal(s.misses.red, 0, 'the count starts again');
+});
+
+test('a 6 is not a miss, and bringing a token out clears the count', () => {
+  const s = createState(seats(2));
+  s.misses.red = 2;
+  const res = applyRoll(s, 6);
+  assert.equal(res.release, false);
+  assert.equal(s.misses.red, 2);
+  applyMove(s, 0);
+  assert.equal(s.misses.red, 0);
+});
+
+test('no misses are counted while a token is in play', () => {
+  const s = createState(seats(2));
+  s.tokens.red = [HOME_STEP - 2, YARD, YARD, YARD];
+  const res = applyRoll(s, 5);                        // overshoots home: stuck, but not a miss
+  assert.ok(res.stuck);
+  assert.equal(res.misses, 0);
+  assert.equal(res.release, false);
+});
+
+test('tokens already home do not count as being on the board', () => {
+  const s = createState(seats(2));
+  s.tokens.red = [HOME_STEP, HOME_STEP, YARD, YARD];
+  const res = applyRoll(s, 1);
+  assert.equal(res.misses, 1);
+});
+
+/* ---------------- computer players ---------------- */
+
+test('the computer always picks a legal token, at every level', () => {
+  for (const level of ['easy', 'medium', 'hard']) {
+    const s = createState(seats(4));
+    s.tokens.red = [5, 20, YARD, 40];
+    s.tokens.green = [3, YARD, YARD, YARD];
+    applyRoll(s, 6);
+    for (let k = 0; k < 20; k++) assert.ok(s.moves.includes(chooseMove(s, level)));
+  }
+  const s = createState(seats(2));
+  applyRoll(s, 3);
+  assert.equal(chooseMove(s, 'hard'), null, 'nothing legal, nothing chosen');
+});
+
+test('medium and hard computers take a capture and a token home', () => {
+  for (const level of ['medium', 'hard']) {
+    const { s, greenR } = collide(3, 1);
+    s.tokens.green[0] = greenR;
+    s.tokens.red[1] = 30;                             // an alternative that captures nothing
+    applyRoll(s, 3);
+    assert.equal(chooseMove(s, level, () => 0), 0, `${level} should capture`);
+
+    const h = createState(seats(2));
+    h.tokens.red = [HOME_STEP - 4, 10, YARD, YARD];
+    applyRoll(h, 4);
+    assert.equal(chooseMove(h, level, () => 0), 0, `${level} should take the token home`);
+  }
+});
+
+test('four computer players finish a whole game under the house rules', () => {
+  let seed = 7;
+  const rng = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const s = createState(seats(4));
+  const levels = ['easy', 'medium', 'hard', 'hard'];
+  let turns = 0;
+  while (s.phase === 'playing' && turns < 5000) {
+    turns++;
+    const res = applyRoll(s, rollDice(rng));
+    if (res.forfeit) { passTurn(s); continue; }
+    if (!s.moves.length) {
+      if (res.release) releaseToken(s);
+      passTurn(s);
+      continue;
+    }
+    const pick = onlyMove(s) ?? chooseMove(s, levels[s.turn], rng);
+    const moved = applyMove(s, pick);
+    passTurn(s, { keepSeat: moved.extraTurn });
+  }
+  assert.equal(s.phase, 'over', `no winner after ${turns} rolls`);
+  assert.ok(COLORS.includes(s.winner));
 });
 
 test('three tokens home is not a win', () => {

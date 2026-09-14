@@ -27,6 +27,7 @@ export const LAST_TRACK_STEP = 50; // r=50 is the final shared square
 export const HOME_STEP = 56;       // r=56 is home
 export const YARD = -1;
 export const TOKENS_PER_PLAYER = 4;
+export const YARD_MISSES = 3;      // misses with nothing on the board before a token comes out free
 
 // Where each colour joins the shared track. Evenly spaced, quarter turns apart.
 export const START = { red: 0, green: 13, yellow: 26, blue: 39 };
@@ -69,7 +70,11 @@ export function isBlock(state, abs, color) {
 
 export function createState(seats) {
   const tokens = {};
-  for (const s of seats) tokens[s.color] = Array(TOKENS_PER_PLAYER).fill(YARD);
+  const misses = {};
+  for (const s of seats) {
+    tokens[s.color] = Array(TOKENS_PER_PLAYER).fill(YARD);
+    misses[s.color] = 0;
+  }
   return {
     phase: 'playing',
     seats,             // [{id, name, color, connected}] — array order is turn order
@@ -79,6 +84,7 @@ export function createState(seats) {
     sixes: 0,          // consecutive 6s this turn
     winner: null,
     tokens,
+    misses,            // colour -> non-6 rolls with nothing on the board
     log: [],
   };
 }
@@ -117,8 +123,16 @@ export function applyRoll(state, dice) {
     return { forfeit: true };
   }
 
-  state.moves = legalMoves(state, currentSeat(state).color, dice);
-  return { forfeit: false, stuck: state.moves.length === 0 };
+  const color = currentSeat(state).color;
+  state.moves = legalMoves(state, color, dice);
+
+  // Nothing on the board and no 6: a miss towards the free token.
+  let release = false;
+  if (dice !== 6 && tokensInPlay(state, color) === 0 && state.tokens[color].some(inYard)) {
+    state.misses[color] += 1;
+    release = state.misses[color] >= YARD_MISSES;
+  }
+  return { forfeit: false, stuck: state.moves.length === 0, release, misses: state.misses[color] };
 }
 
 /**
@@ -152,9 +166,52 @@ export function applyMove(state, i) {
     state.winner = color;
   }
 
-  // A 6 or a capture buys another go. Landing a token home does not.
-  const extraTurn = !won && (dice === 6 || captured.length > 0);
+  // A token that leaves the yard wipes the miss count: it's for players with
+  // nothing on the board, and this player now has something.
+  if (inYard(from)) state.misses[color] = 0;
+
+  // A 6, a capture, or a token reaching home buys another go.
+  const extraTurn = !won && (dice === 6 || captured.length > 0 || isHome(to));
   return { captured, extraTurn, won, from, to };
+}
+
+/**
+ * The house rule for a player with nothing on the board: every roll that
+ * isn't a 6 is a miss, the count carries over between turns, and the
+ * YARD_MISSES-th miss brings a token out for free. Places the first yard
+ * token on the start square and resets the count. Returns its index.
+ */
+export function releaseToken(state) {
+  const color = currentSeat(state).color;
+  const i = state.tokens[color].findIndex(inYard);
+  if (i < 0) throw new Error('nothing in the yard');
+  state.tokens[color][i] = 0;       // the start square is safe: nothing to capture
+  state.misses[color] = 0;
+  state.moves = [];
+  return i;
+}
+
+/** Tokens out on the track or in the home column — not yard, not home. */
+export const tokensInPlay = (state, color) =>
+  state.tokens[color].filter((r) => !inYard(r) && !isHome(r)).length;
+
+/**
+ * Should this turn's roll happen by itself? Only when exactly one token is in
+ * play: the player has nothing to decide before the dice land.
+ */
+export const autoRolls = (state) =>
+  state.phase === 'playing' && state.dice === null && tokensInPlay(state, currentSeat(state).color) === 1;
+
+/**
+ * The one move worth making for the player, or null if there is a real
+ * choice. Tokens that would end up in the same place are the same move — four
+ * tokens in the yard on a 6 is one option, not four.
+ */
+export function onlyMove(state) {
+  if (!state.moves.length) return null;
+  const color = currentSeat(state).color;
+  const spots = new Set(state.moves.map((i) => state.tokens[color][i]));
+  return spots.size === 1 ? state.moves[0] : null;
 }
 
 /** Hand over to the next connected player (or the same one, on an extra turn). */

@@ -605,3 +605,99 @@ test('a full game of random legal moves always terminates with a winner', () => 
   assert.equal(s.phase, 'over', 'the game should reach a winner, not deadlock');
   assert.ok(s.scores[s.winner] >= DEFAULT_TARGET);
 });
+
+/* ---------------- the computer ---------------- */
+
+import { chooseAction, bestColor } from '../js/games/uno/ai.js';
+
+const botSeats = (n) => Array.from({ length: n }, (_, i) => ({ id: 'b' + i, name: 'B' + i, connected: true }));
+
+/** What index.js's viewFor hands a player: their hand, everyone's counts,
+ *  and the challenge without its secret. */
+function viewOf(s, id) {
+  const counts = {};
+  for (const seat of s.seats) counts[seat.id] = s.hands[seat.id].length;
+  return {
+    ...s, hand: s.hands[id], counts, legal: legalPlays(s, id), needsColor: needsOpeningColor(s),
+    challenge: s.challenge ? { playerId: s.challenge.playerId, byId: s.challenge.byId } : null,
+  };
+}
+
+/** Carry out a bot's intent the way the host does. */
+function perform(s, id, act, rng) {
+  if (act.t === 'color') applyOpeningColor(s, id, act.color);
+  else if (act.t === 'play') applyPlay(s, id, act.cardId, act.color);
+  else if (act.t === 'draw') { if (!applyDraw(s, id, rng).playable) applyPass(s, id); }
+  else if (act.t === 'pass') applyPass(s, id);
+  else if (act.t === 'take') applyTakeDraw(s, id, rng);
+  else if (act.t === 'challenge') applyChallenge(s, id, rng);
+  else throw new Error('unknown action ' + act.t);
+}
+
+const mkCard = (id, color, value) => ({ id, color, value });
+
+/** A state with the chosen hand for whoever is to move, and a plain red 3 showing. */
+function situation(hand) {
+  const s = createState(botSeats(2), { rng: seeded(3) });
+  s.pending = null; s.challenge = null; s.drawnId = null; s.mustPass = false;
+  s.color = 'red'; s.value = 3;
+  s.discard = [mkCard('top', 'red', 3)];
+  const id = currentSeat(s).id;
+  s.hands[id] = hand;
+  return { s, id };
+}
+
+test('computers at every level play whole matches using only legal actions', () => {
+  const levels = ['easy', 'medium', 'hard', 'hard'];
+  for (let seed = 1; seed <= 4; seed++) {
+    const rng = seeded(seed);
+    const s = createState(botSeats(4), { rng, target: 150 });
+    let actions = 0;
+    while (s.phase !== 'over') {
+      assert.ok(++actions < 20000, 'the match should end');
+      if (s.phase === 'roundover') { nextRound(s, rng); continue; }
+      const seat = currentSeat(s);
+      const level = levels[s.seats.indexOf(seat)];
+      const act = chooseAction(viewOf(s, seat.id), seat.id, level, rng);
+      if (act.t === 'play' && s.hands[seat.id].length === 2) applySayUno(s, seat.id);
+      perform(s, seat.id, act, rng);
+    }
+    assert.ok(s.winner);
+  }
+});
+
+test('bestColor calls the colour the hand holds most of', () => {
+  const hand = [mkCard('a', 'blue', 1), mkCard('b', 'blue', 7), mkCard('c', 'green', 2), mkCard('d', null, 'wild')];
+  assert.equal(bestColor(hand), 'blue');
+});
+
+test('facing a draw chain, the computer passes it on with a +2 before spending a +4', () => {
+  const { s, id } = situation([mkCard('w4', null, 'wild4'), mkCard('d2', 'blue', 'draw2'), mkCard('n', 'blue', 5)]);
+  s.pending = { kind: 'draw2', amount: 2 };
+  for (const level of ['medium', 'hard']) {
+    assert.deepEqual(chooseAction(viewOf(s, id), id, level, () => 0.9), { t: 'play', cardId: 'd2', color: undefined });
+  }
+  s.hands[id] = [mkCard('n', 'blue', 5)];
+  assert.deepEqual(chooseAction(viewOf(s, id), id, 'hard'), { t: 'take' });
+});
+
+test('medium and hard keep a wild back when a coloured card will do', () => {
+  const { s, id } = situation([mkCard('w', null, 'wild'), mkCard('r7', 'red', 7), mkCard('g1', 'green', 1)]);
+  for (const level of ['medium', 'hard']) {
+    assert.equal(chooseAction(viewOf(s, id), id, level, () => 0.5).cardId, 'r7');
+  }
+});
+
+test('a wild played by the computer names a colour it actually holds', () => {
+  const { s, id } = situation([mkCard('w', null, 'wild'), mkCard('g1', 'green', 1), mkCard('g2', 'green', 8)]);
+  const act = chooseAction(viewOf(s, id), id, 'hard');
+  assert.equal(act.cardId, 'w');
+  assert.equal(act.color, 'green');
+});
+
+test('with nothing to play the computer draws, and passes on a card it cannot use', () => {
+  const { s, id } = situation([mkCard('g1', 'green', 1), mkCard('b2', 'blue', 2)]);
+  assert.deepEqual(chooseAction(viewOf(s, id), id, 'medium'), { t: 'draw' });
+  s.mustPass = true;
+  assert.deepEqual(chooseAction(viewOf(s, id), id, 'medium'), { t: 'pass' });
+});
